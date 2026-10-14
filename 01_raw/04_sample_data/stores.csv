@@ -1,0 +1,8 @@
+STORE_ID,STORE_NAME,STORE_TYPE,REGION,ADDRESS,CITY,STATE,ZIP_CODE,COUNTRY,OPEN_DATE,MANAGER_NAME
+S001,SportZone Toronto Downtown,PHYSICAL,EAST,100 Queen St W,Toronto,ON,M5H2N2,CA,2015-03-01,Alex Turner
+S002,SportZone Vancouver Pacific,PHYSICAL,WEST,1000 Robson St,Vancouver,BC,V6E1B5,CA,2016-07-15,Maria Santos
+S003,SportZone New York 5th Ave,PHYSICAL,NORTHEAST,500 5th Ave,New York,NY,10110,US,2014-11-01,John Lee
+S004,SportZone Chicago Michigan,PHYSICAL,MIDWEST,900 N Michigan Ave,Chicago,IL,60611,US,2017-04-20,Susan Kim
+S005,SportZone Miami Brickell,PHYSICAL,SOUTH,1200 Brickell Ave,Miami,FL,33131,US,2018-09-10,Carlos Reyes
+S006,SportZone Online CA,ONLINE,NATIONAL,,,,, CA,2013-01-01,Digital Team
+S007,SportZone Online US,ONLINE,NATIONAL,,,,,US,2013-01-01,Digital Team
