@@ -1,2 +1,28 @@
+## SportZone Retail Analytics Platform — Python dependencies
+
+# ── Database connections ───────────────────────────────────────────────────────
 snowflake-connector-python==4.7.1
+psycopg2-binary==2.9.12
+
+# ── Data + ML ─────────────────────────────────────────────────────────────────
+pandas==3.0.6
+numpy==2.2.6
+pyarrow==25.0.1
+scikit-learn>=1.3.0
+cryptography>=41.0.0
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+streamlit==1.57.0
+plotly==6.7.0
+
+# ── ETL / data pipeline ────────────────────────────────────────────────────────
+faker==40.15.0
+sqlparse==0.5.5
 python-dotenv==1.2.2
+
+# ── AI (optional — needed for NL→SQL and AI insights) ─────────────────────────
+# openai>=1.0.0    ← install separately: pip install openai
+
+# ── Snowflake write_pandas support ─────────────────────────────────────────────
+# Note: pyarrow 25 works but triggers a warning from snowflake-connector.
+# To silence: pip install "pyarrow>=14.0.1,<24"  (requires Python <3.14)
