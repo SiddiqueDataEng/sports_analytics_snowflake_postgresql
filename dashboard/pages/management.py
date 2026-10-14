@@ -343,8 +343,11 @@ def render():
                 elif added > 0:
                     st.success(f"✅ ETL complete — **{added:,} new rows** in Snowflake DWH.")
                     bar_before_after(sf_before, sf_after, "Snowflake DWH — Before vs After ETL")
+                    # Clear cached sf_query results so analytics page shows fresh data
+                    st.cache_data.clear()
                 else:
                     st.success("✅ ETL complete — DWH already up to date.")
+                    st.cache_data.clear()
             except Exception as e:
                 st.error(f"ETL failed: {e}")
             finally:

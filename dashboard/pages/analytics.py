@@ -23,6 +23,52 @@ PL = dict(paper_bgcolor=BG, plot_bgcolor=BG2, font=dict(color=FONT),
           margin=dict(l=8,r=8,t=40,b=8))
 CLR=["#58a6ff","#3fb950","#d29922","#f85149","#bc8cff","#39d0d8","#f78166","#ffa657"]
 
+# ── Educational tooltips for every chart ─────────────────────────────────────
+CHART_HELP = {
+    "kpi_revenue":    "💰 **Total Revenue** = sum of all NET_REVENUE from FACT_SALES (after discounts). Higher is better. Compare to previous periods to spot growth.",
+    "kpi_profit":     "💵 **Gross Profit** = Revenue − COGS (Cost of Goods Sold). Shows how much money remains after product costs.",
+    "kpi_margin":     "📊 **Margin %** = Gross Profit / Revenue × 100. Industry benchmark for sporting goods is 35-45%. Below 30% = pricing issue.",
+    "kpi_orders":     "📦 **Orders** = count of unique ORDER_IDs. Useful for understanding transaction volume independent of order size.",
+    "kpi_aov":        "🛒 **AOV (Avg Order Value)** = Total Revenue / Total Orders. Higher AOV = customers buying more per visit.",
+    "kpi_return":     "↩️ **Return Rate** = % of orders with status RETURNED. Above 10% signals product quality or expectation issues.",
+    "daily_revenue":  "📈 **Daily Revenue Trend** — Each bar/point = total revenue on that calendar day across all channels. Rolling average smooths noise to reveal the true trend direction.",
+    "channel_mix":    "🔀 **Channel Mix** — How revenue splits across IN-STORE, ONLINE, MOBILE. Helps decide where to invest marketing budget.",
+    "product_perf":   "🛍️ **Product Performance** — Revenue and margin by category/brand. High revenue + low margin = pricing opportunity. High margin + low revenue = growth opportunity.",
+    "customer_rfm":   "👥 **RFM Analysis** — Recency (when did they last buy?), Frequency (how often?), Monetary (how much?). The foundation of customer segmentation.",
+    "ltv_dist":       "💎 **LTV Distribution** — Lifetime Value = total spend per customer. The top 20% of customers typically drive 80% of revenue (Pareto principle).",
+    "inventory":      "📦 **Inventory Status** — STOCKED = healthy, LIMITED = approaching reorder point, OUT_OF_STOCK = lost sales opportunity. Reorder Point = minimum qty before restocking.",
+    "forecast":       "🔮 **Revenue Forecast** — Uses Linear Regression (y = mx + b) on daily revenue. The model finds the best-fit line through historical data and extrapolates forward. R² measures fit quality (1.0 = perfect, 0 = random).",
+    "segmentation":   "🎯 **K-Means Clustering** — Groups customers by similarity in RFM features. PCA reduces dimensions to 2D for visualization. Each cluster = a distinct customer behavior pattern.",
+    "churn":          "🚨 **Churn Risk** — Rule-based scoring: high recency + low orders + Bronze tier = high churn risk. Proactively targeting high-risk customers with offers reduces revenue loss.",
+    "market_basket":  "🛒 **Market Basket Analysis** — Finds products frequently bought together (co-occurrence). Foundation for 'customers also bought' recommendations.",
+    "anomaly":        "⚠️ **Anomaly Detection** — Isolation Forest algorithm identifies days where revenue deviates significantly from normal patterns. Anomalies may indicate promotions, events, or data quality issues.",
+    "waterfall":      "💧 **Waterfall Chart** — Shows how each promotion contributes to total profit. Green bars = profit, red bars = discount cost.",
+    "promo_roi":      "🎯 **Promotion ROI** — Revenue generated per $1 of discount given. ROI > 5x = effective promotion. Below 2x = discount eating into margin.",
+}
+
+PIPELINE_EXPLANATION = """
+### 🏗️ How This Data Platform Works
+
+```
+Neon PostgreSQL (OLTP)          Snowflake (DWH)              This Dashboard
+┌─────────────────────┐        ┌──────────────────────┐     ┌─────────────┐
+│ oltp.customer        │──ETL──▶│ RAW.RAW_CUSTOMERS     │     │             │
+│ oltp.order_header    │──ETL──▶│ RAW.RAW_ORDERS        │     │  Analytics  │
+│ oltp.order_item      │──ETL──▶│ STAGING.STG_ORDERS    │──▶  │  ML Models  │
+│ oltp.product         │──ETL──▶│ WAREHOUSE.DIM_PRODUCT │     │  AI Insights│
+│ oltp.inventory       │──ETL──▶│ WAREHOUSE.FACT_SALES  │     │             │
+└─────────────────────┘        └──────────────────────┘     └─────────────┘
+     Source of Truth               Star Schema (DWH)           Presentation
+```
+
+**ETL Pipeline** (Extract → Transform → Load):
+- **Extract**: Pulls only NEW rows since last run using watermark timestamps
+- **Transform**: Cleans data, fixes types, derives business metrics (margins, age bands)  
+- **Load**: TRUNCATE + INSERT for staging, MERGE for warehouse (prevents duplicates)
+
+**Star Schema**: FACT_SALES is the center. DIM tables (Customer, Product, Store, Date) are the spokes. This design makes analytics queries fast and simple.
+"""
+
 def fmt(v, p="", s="", d=0):
     if v is None: return "—"
     try:
@@ -34,23 +80,28 @@ def fmt(v, p="", s="", d=0):
     if abs(v) >= 1e3: return f"{p}{v/1e3:.1f}K{s}"
     return f"{p}{v:,.{d}f}{s}"
 
+def _explain(key: str):
+    """Show a self-explaining tooltip for any chart or metric."""
+    if key in CHART_HELP:
+        with st.expander("ℹ️ What does this mean?", expanded=False):
+            st.markdown(CHART_HELP[key])
+
 # ── Data loaders ──────────────────────────────────────────────────────────────
 def _cast_numerics(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Force-cast Snowflake Decimal / object columns to proper numeric dtypes.
-    Uses 'coerce' so non-numeric strings become NaN instead of crashing.
-    """
+    """Force-cast Snowflake Decimal / object columns to proper numeric dtypes."""
     if df.empty:
         return df
     import decimal
     for col in df.columns:
-        # If any value in column is a Decimal, force the whole column to float
         sample = df[col].dropna()
-        if len(sample) > 0 and isinstance(sample.iloc[0], decimal.Decimal):
+        if len(sample) == 0:
+            continue
+        first = sample.iloc[0]
+        # Always convert Decimal
+        if isinstance(first, decimal.Decimal):
             df[col] = pd.to_numeric(df[col], errors="coerce")
         elif df[col].dtype == object:
             converted = pd.to_numeric(df[col], errors="coerce")
-            # Only replace if >50% of non-null values converted successfully
             if converted.notna().sum() >= df[col].notna().sum() * 0.5:
                 df[col] = converted
     return df
@@ -86,7 +137,14 @@ def load_daily_sales(days=180, _dummy=None):
           AND D.FULL_DATE >= DATEADD(DAY,-{days},CURRENT_DATE())
         GROUP BY 1,2,3,4,5 ORDER BY 1
     """)
-    return _cast_numerics(df)
+    df = _cast_numerics(df)
+    # Guarantee FULL_DATE is datetime and numerics are float — critical for ML
+    if not df.empty:
+        df["FULL_DATE"] = pd.to_datetime(df["FULL_DATE"], errors="coerce")
+        for col in ["REVENUE", "PROFIT", "ORDERS", "UNITS"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+    return df
 
 @st.cache_data(ttl=120, show_spinner=False)
 def load_category(_dummy=None):
@@ -329,6 +387,15 @@ ORDER BY CO_OCCURRENCES DESC LIMIT 20""",
 def render():
     st.markdown("## 📊 SportZone Analytics — Complete Dashboard")
 
+    # ── Problem Statement Banner ──────────────────────────────────────────────
+    with st.expander("📚 **What is this platform? Click to learn** — SportZone Data Engineering Platform", expanded=False):
+        st.markdown(PIPELINE_EXPLANATION)
+        col1, col2, col3 = st.columns(3)
+        col1.info("**🎯 Business Goal**\nUnderstand sales performance, customer behavior, and inventory health to make data-driven retail decisions.")
+        col2.info("**🏗️ Tech Stack**\nNeon PostgreSQL (OLTP source) → Python ETL → Snowflake (DWH) → Streamlit (Dashboard) → scikit-learn (ML)")
+        col3.info("**📊 Data Volume**\n500+ customers · 10K+ orders · 20 products · 11 stores · 6 channels tracked daily")
+    st.divider()
+
     dummy = st.session_state.get("_cache_bust", 0)
     tabs = st.tabs([
         "📈 Overview", "🛍️ Products", "👥 Customers",
@@ -371,6 +438,12 @@ def render():
             c[5].metric("🛒 AOV",         fmt(r.get("AVG_ORDER_VALUE",0),"$",d=0))
             c[6].metric("📊 Margin",      f"{r.get('MARGIN_PCT',0):.1f}%")
             c[7].metric("↩️ Return Rate", f"{r.get('RETURN_RATE',0):.1f}%")
+
+            with st.expander("📚 Understanding these KPIs — click to learn", expanded=False):
+                k1,k2,k3 = st.columns(3)
+                k1.info(CHART_HELP["kpi_revenue"] + "\n\n" + CHART_HELP["kpi_profit"])
+                k2.info(CHART_HELP["kpi_margin"] + "\n\n" + CHART_HELP["kpi_aov"])
+                k3.info(CHART_HELP["kpi_orders"] + "\n\n" + CHART_HELP["kpi_return"])
 
         if not sales.empty:
             st.markdown("---")
@@ -897,331 +970,394 @@ def render():
         if not has_ai:
             st.warning("⚠️ Configure your OpenAI API key in **Management → AI Settings** to enable AI features.")
             st.info("AI features: Natural Language → SQL, automated insights, chart storytelling, anomaly detection, business recommendations.")
-            return
+        else:
+            # NL → SQL
+            st.markdown("#### 💬 Natural Language → Snowflake SQL")
+            nl_input = st.text_area(
+                "Ask a business question in plain English:",
+                placeholder="e.g. Show me total revenue by country for GOLD tier customers in 2024",
+                height=80, key="nl_q"
+            )
+            c_nl1, c_nl2 = st.columns([1,3])
+            if c_nl1.button("🔮 Generate SQL", type="primary", key="btn_nl_sql") and nl_input:
+                with st.spinner("Generating SQL …"):
+                    system = f"You are a Snowflake SQL expert. Schema:\n{SF_SCHEMA}\nReturn ONLY the SQL query, no explanations, no markdown."
+                    sql_out = ask_openai(nl_input, system)
+                    sql_out = sql_out.strip().strip("```sql").strip("```").strip()
+                    st.session_state["ai_sql"] = sql_out
 
-        # NL → SQL
-        st.markdown("#### 💬 Natural Language → Snowflake SQL")
-        nl_input = st.text_area(
-            "Ask a business question in plain English:",
-            placeholder="e.g. Show me total revenue by country for GOLD tier customers in 2024",
-            height=80, key="nl_q"
-        )
-        c_nl1, c_nl2 = st.columns([1,3])
-        if c_nl1.button("🔮 Generate SQL", type="primary", key="btn_nl_sql") and nl_input:
-            with st.spinner("Generating SQL …"):
-                system = f"You are a Snowflake SQL expert. Schema:\n{SF_SCHEMA}\nReturn ONLY the SQL query, no explanations, no markdown."
-                sql_out = ask_openai(nl_input, system)
-                sql_out = sql_out.strip().strip("```sql").strip("```").strip()
-                st.session_state["ai_sql"] = sql_out
+            if "ai_sql" in st.session_state and st.session_state["ai_sql"]:
+                import re as _re, html as _html, sqlparse as _sp
+                def _fmt(s):
+                    try: return _sp.format(s, reindent=True, keyword_case="upper", indent_width=4)
+                    except: return s
+                def _hl(sql_text):
+                    t = _html.escape(sql_text)
+                    t = _re.sub(r'\b(SELECT|FROM|WHERE|JOIN|LEFT|RIGHT|ON|AS|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|WITH|UNION|AND|OR|IN|CASE|WHEN|THEN|ELSE|END|DISTINCT|MERGE|USING|MATCHED|COPY\s+INTO|CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|TABLE|VIEW|SCHEMA|DATABASE|IF|NOT|EXISTS|REPLACE|SET|TRUE|FALSE|NULL|QUALIFY|OVER|PARTITION\s+BY|ROWS|PRECEDING|FOLLOWING|NULLS|ASC|DESC|CURRENT_DATE|CURRENT_TIMESTAMP|DATEADD|DATEDIFF|TO_CHAR|ROUND|NULLIF|COALESCE|IFF|COUNT|SUM|AVG|MIN|MAX|NTILE|LAG|LEAD|RANK|ROW_NUMBER)\b',
+                        lambda m: f'<span style="color:#ff7b72;font-weight:700">{m.group()}</span>', t, flags=_re.IGNORECASE)
+                    t = _re.sub(r"(&#x27;[^&#]*?&#x27;)", lambda m: f'<span style="color:#a5d6ff">{m.group()}</span>', t)
+                    t = _re.sub(r'\b(\d+\.?\d*)\b', lambda m: f'<span style="color:#f0883e">{m.group()}</span>', t)
+                    t = _re.sub(r'(--.+?)(?=\n|$)', lambda m: f'<span style="color:#8b949e;font-style:italic">{m.group()}</span>', t)
+                    t = _re.sub(r'\b([A-Z_]+\.[A-Z_]+(?:\.[A-Z_]+)?)\b', lambda m: f'<span style="color:#79c0ff">{m.group()}</span>', t, flags=_re.IGNORECASE)
+                    return (f'<pre style="background:#161b22;border:1px solid #30363d;border-radius:8px;'
+                            f'padding:14px;font-family:Consolas,monospace;font-size:12px;'
+                            f'line-height:1.6;overflow-x:auto;color:#e6edf3;white-space:pre-wrap">{t}</pre>')
+                formatted_ai = _fmt(st.session_state["ai_sql"])
+                st.markdown(_hl(formatted_ai), unsafe_allow_html=True)
+                col_run, col_load = st.columns(2)
+                if col_run.button("▶️ Run Generated SQL", key="btn_run_ai_sql"):
+                    with st.spinner("Running …"):
+                        try:
+                            df = _cast_numerics(sf_query(st.session_state["ai_sql"]))
+                            st.success(f"✅ {len(df):,} rows")
+                            st.dataframe(df, use_container_width=True, hide_index=True)
+                            num_cols = df.select_dtypes(include="number").columns.tolist()
+                            str_cols = df.select_dtypes(exclude="number").columns.tolist()
+                            if num_cols and str_cols:
+                                fig = px.bar(df.head(20), x=str_cols[0], y=num_cols[0],
+                                             color_discrete_sequence=CLR,
+                                             title=f"Result: {nl_input[:60]}")
+                                fig.update_layout(**PL, height=320)
+                                st.plotly_chart(fig, use_container_width=True)
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+                if col_load.button("📥 Load into SQL Editor", key="btn_ai_to_editor"):
+                    st.session_state["sql_raw"] = st.session_state["ai_sql"]
+                    st.rerun()
 
-        if "ai_sql" in st.session_state and st.session_state["ai_sql"]:
-            import re as _re, html as _html, sqlparse as _sp
-            def _fmt(s):
-                try: return _sp.format(s, reindent=True, keyword_case="upper", indent_width=4)
-                except: return s
-            def _hl(sql_text):
-                t = _html.escape(sql_text)
-                t = _re.sub(r'\b(SELECT|FROM|WHERE|JOIN|LEFT|RIGHT|ON|AS|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|WITH|UNION|AND|OR|IN|CASE|WHEN|THEN|ELSE|END|DISTINCT|MERGE|USING|MATCHED|COPY\s+INTO|CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|TABLE|VIEW|SCHEMA|DATABASE|IF|NOT|EXISTS|REPLACE|SET|TRUE|FALSE|NULL|QUALIFY|OVER|PARTITION\s+BY|ROWS|PRECEDING|FOLLOWING|NULLS|ASC|DESC|CURRENT_DATE|CURRENT_TIMESTAMP|DATEADD|DATEDIFF|TO_CHAR|ROUND|NULLIF|COALESCE|IFF|COUNT|SUM|AVG|MIN|MAX|NTILE|LAG|LEAD|RANK|ROW_NUMBER)\b',
-                    lambda m: f'<span style="color:#ff7b72;font-weight:700">{m.group()}</span>', t, flags=_re.IGNORECASE)
-                t = _re.sub(r"(&#x27;[^&#]*?&#x27;)", lambda m: f'<span style="color:#a5d6ff">{m.group()}</span>', t)
-                t = _re.sub(r'\b(\d+\.?\d*)\b', lambda m: f'<span style="color:#f0883e">{m.group()}</span>', t)
-                t = _re.sub(r'(--.+?)(?=\n|$)', lambda m: f'<span style="color:#8b949e;font-style:italic">{m.group()}</span>', t)
-                t = _re.sub(r'\b([A-Z_]+\.[A-Z_]+(?:\.[A-Z_]+)?)\b', lambda m: f'<span style="color:#79c0ff">{m.group()}</span>', t, flags=_re.IGNORECASE)
-                return (f'<pre style="background:#161b22;border:1px solid #30363d;border-radius:8px;'
-                        f'padding:14px;font-family:Consolas,monospace;font-size:12px;'
-                        f'line-height:1.6;overflow-x:auto;color:#e6edf3;white-space:pre-wrap">{t}</pre>')
-            formatted_ai = _fmt(st.session_state["ai_sql"])
-            st.markdown(_hl(formatted_ai), unsafe_allow_html=True)
-            col_run, col_load = st.columns(2)
-            if col_run.button("▶️ Run Generated SQL", key="btn_run_ai_sql"):
-                with st.spinner("Running …"):
-                    try:
-                        df = _cast_numerics(sf_query(st.session_state["ai_sql"]))
-                        st.success(f"✅ {len(df):,} rows")
-                        st.dataframe(df, use_container_width=True, hide_index=True)
-                        num_cols = df.select_dtypes(include="number").columns.tolist()
-                        str_cols = df.select_dtypes(exclude="number").columns.tolist()
-                        if num_cols and str_cols:
-                            fig = px.bar(df.head(20), x=str_cols[0], y=num_cols[0],
-                                         color_discrete_sequence=CLR,
-                                         title=f"Result: {nl_input[:60]}")
-                            fig.update_layout(**PL, height=320)
-                            st.plotly_chart(fig, use_container_width=True)
-                            story = ask_openai(
-                                f"Explain this chart in 2-3 sentences: {nl_input}. Top: {df.iloc[0].to_dict() if not df.empty else 'no data'}",
-                                "You are a business analyst.")
-                            st.info(story)
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-                        fix = ask_openai(f"Fix this Snowflake SQL error: {e}\nSQL: {st.session_state['ai_sql']}\nReturn only SQL.",
-                                         "You are a Snowflake SQL expert.")
-                        st.code(fix, language="sql")
-            if col_load.button("📥 Load into SQL Editor", key="btn_ai_to_editor"):
-                st.session_state["sql_raw"] = st.session_state["ai_sql"]
-                st.rerun()
+            st.divider()
+            st.markdown("#### 🧠 AI Business Insights")
+            if st.button("Generate Automated Insights", key="btn_insights"):
+                if not kpi_df.empty:
+                    r = kpi_df.iloc[0]
+                    kpi_str = (f"Revenue=${float(r.get('TOTAL_REVENUE',0)):,.0f}, "
+                               f"Profit=${float(r.get('TOTAL_PROFIT',0)):,.0f}, "
+                               f"Margin={r.get('MARGIN_PCT',0):.1f}%, "
+                               f"Orders={r.get('TOTAL_ORDERS',0)}")
+                else:
+                    kpi_str = "N/A"
+                top_cat  = catdf.iloc[0]["PRD_CATEGORY"] if not catdf.empty else "N/A"
+                oos      = int((invdf["INV_STATUS"]=="OUT_OF_STOCK").sum()) if not invdf.empty else 0
+                with st.spinner("Analysing …"):
+                    insights = ask_openai(
+                        f"SportZone retail: KPIs={kpi_str}, Top cat={top_cat}, OOS SKUs={oos}. "
+                        f"5 specific actionable insights with priority.",
+                        "You are a retail analytics consultant.")
+                st.markdown(insights)
 
-        st.divider()
-        st.markdown("#### 🧠 AI Business Insights")
-        if st.button("Generate Automated Insights", key="btn_insights"):
-            if not kpi_df.empty:
-                r = kpi_df.iloc[0]
-                kpi_str = (f"Revenue=${float(r.get('TOTAL_REVENUE',0)):,.0f}, "
-                           f"Profit=${float(r.get('TOTAL_PROFIT',0)):,.0f}, "
-                           f"Margin={r.get('MARGIN_PCT',0):.1f}%, "
-                           f"Orders={r.get('TOTAL_ORDERS',0)}, Return={r.get('RETURN_RATE',0):.1f}%")
-            else:
-                kpi_str = "N/A"
-            top_cat   = catdf.iloc[0]["PRD_CATEGORY"] if not catdf.empty else "N/A"
-            top_tier  = custdf.groupby("LOYALTY_TIER")["LTV"].mean().idxmax() if not custdf.empty else "N/A"
-            oos_count = int((invdf["INV_STATUS"]=="OUT_OF_STOCK").sum()) if not invdf.empty else 0
-            with st.spinner("Analysing …"):
-                insights = ask_openai(
-                    f"SportZone retail: KPIs={kpi_str}, Top cat={top_cat}, Top LTV tier={top_tier}, OOS SKUs={oos_count}. "
-                    f"Provide 5 specific actionable insights with priority (HIGH/MEDIUM/LOW).",
-                    "You are a retail analytics consultant.")
-            st.markdown(insights)
+            st.divider()
+            st.markdown("#### 🎯 Suggested Business Questions")
+            if st.button("Get AI Question Suggestions", key="btn_suggest_q"):
+                with st.spinner():
+                    sugg = ask_openai(
+                        "For SportZone sporting goods retailer with Snowflake DWH, "
+                        "suggest 8 business questions from operational to strategic. Numbered list.",
+                        "You are a retail data analyst.")
+                st.markdown(sugg)
 
-        st.divider()
-        st.markdown("#### 🎯 Suggested Business Questions")
-        if st.button("Get AI Question Suggestions", key="btn_suggest_q"):
-            with st.spinner():
-                sugg = ask_openai(
-                    "For SportZone sporting goods retailer (Snowflake DWH with sales, inventory, customers, promotions), "
-                    "suggest 8 business questions from operational to strategic. Numbered list.",
-                    "You are a retail data analyst.")
-            st.markdown(sugg)
 
     # ── TAB 8: ML / Data Science ──────────────────────
     with tabs[7]:
         st.markdown("### 🧪 ML & Data Science")
-        ml_tab1, ml_tab2, ml_tab3, ml_tab4, ml_tab5 = st.tabs([
-            "📈 Forecast", "🎯 Segmentation", "🚨 Churn",
-            "🛒 Market Basket", "📊 Anomaly Detection"
-        ])
+        ml_section = st.radio(
+            "Model",
+            ["📈 Forecast", "🎯 Segmentation", "🚨 Churn",
+             "🛒 Market Basket", "📊 Anomaly Detection"],
+            horizontal=True,
+            key="ml_nav",
+        )
+        st.divider()
 
-        # ── Forecast ──────────────────────────────────────────────────────────
-        with ml_tab1:
-            st.markdown("#### Revenue Forecast — Linear Regression + Trend Decomposition")
-            if not sales.empty and len(sales) >= 14:
-                fc1, fc2 = st.columns([3,1])
-                with fc2:
-                    horizon   = st.slider("Forecast horizon (days)", 7, 90, 30, key="fc_horizon")
-                    show_ci   = st.checkbox("Show confidence band", True, key="fc_ci")
-                with fc1:
-                    try:
-                        from sklearn.linear_model import LinearRegression
-                        import numpy as np
-                        sales3 = sales.copy()
-                        sales3["FULL_DATE"] = pd.to_datetime(sales3["FULL_DATE"])
-                        daily3 = (sales3.groupby("FULL_DATE")["REVENUE"].sum()
-                                        .reset_index().sort_values("FULL_DATE"))
-                        daily3["t"] = (daily3["FULL_DATE"] - daily3["FULL_DATE"].min()).dt.days
-                        X = daily3[["t"]].values; y = daily3["REVENUE"].values.astype(float)
-                        model = LinearRegression().fit(X, y)
-                        resid_std = np.std(y - model.predict(X))
-                        last_t = int(daily3["t"].max())
-                        ft     = np.arange(last_t+1, last_t+horizon+1).reshape(-1,1)
-                        fdates = pd.date_range(daily3["FULL_DATE"].max() + pd.Timedelta(days=1), periods=horizon)
-                        fcast  = model.predict(ft)
-                        slope  = float(model.coef_[0])
-
-                        fig = go.Figure()
-                        fig.add_scatter(x=daily3["FULL_DATE"], y=y, name="Actual",
-                                        line=dict(color=CLR[0], width=1.5), opacity=.8)
-                        # Rolling avg
-                        roll = pd.Series(y).rolling(7, min_periods=1).mean()
-                        fig.add_scatter(x=daily3["FULL_DATE"], y=roll, name="7d MA",
-                                        line=dict(color=CLR[1], width=2))
-                        fig.add_scatter(x=fdates, y=fcast, name="Forecast",
-                                        line=dict(color=CLR[2], width=2.5, dash="dash"))
-                        if show_ci:
-                            fig.add_scatter(x=list(fdates)+list(fdates[::-1]),
-                                            y=list(fcast+1.96*resid_std)+list((fcast-1.96*resid_std)[::-1]),
-                                            fill="toself", fillcolor="rgba(210,153,34,0.12)",
-                                            line=dict(color="rgba(0,0,0,0)"), name="95% CI")
-                        fig.add_vline(x=str(daily3["FULL_DATE"].max()), line_dash="dot",
-                                      line_color="#8b949e",
-                                      annotation_text="Forecast start", annotation_position="top left")
-                        fig.update_layout(**PL, title=f"Revenue Forecast +{horizon} days", height=380,
-                                          legend=dict(orientation="h", yanchor="bottom", y=1.02))
-                        st.plotly_chart(fig, use_container_width=True)
-
-                        direction = "📈 upward" if slope > 0 else "📉 downward"
-                        fc_total  = float(fcast.sum())
-                        m1, m2, m3 = st.columns(3)
-                        m1.metric("Trend",            f"${slope:+.0f}/day")
-                        m2.metric(f"{horizon}d Forecast", fmt(fc_total,"$"))
-                        m3.metric("Model R²",         f"{model.score(X,y):.3f}")
-                        st.info(f"Revenue is on a **{direction}** trajectory at **${slope:+.0f}/day**.")
-                        if has_ai:
-                            ai_story(f"Revenue trend ${slope:+.0f}/day, R²={model.score(X,y):.2f}. "
-                                     f"{horizon}d forecast=${fc_total:,.0f}. 2 sentence business implication?")
-                    except Exception as e:
-                        st.warning(f"Forecast error: {e}")
-            else:
+        # ── Forecast ──────────────────────────────────────────────────
+        if ml_section == "📈 Forecast":
+            st.markdown("#### Revenue Forecast — Linear Regression + Trend")
+            if sales.empty or len(sales) < 14:
                 st.info("Need at least 14 days of sales data.")
+            else:
+                with st.expander("📚 Learn: What is Revenue Forecasting?", expanded=False):
+                    st.markdown("""
+**Linear Regression Forecasting** fits a straight line through historical daily revenue data.
 
-        # ── K-Means Segmentation ──────────────────────────────────────────────
-        with ml_tab2:
-            st.markdown("#### Customer Segmentation — K-Means RFM + PCA Visualisation")
-            if not custdf.empty and len(custdf) >= 10:
-                seg_col1, seg_col2 = st.columns([3,1])
-                with seg_col2:
-                    n_clusters = st.slider("Number of segments", 2, 6, 4, key="km_k")
-                with seg_col1:
-                    try:
-                        from sklearn.preprocessing import StandardScaler
-                        from sklearn.cluster import KMeans
-                        from sklearn.decomposition import PCA
-                        seg_df = custdf[["RECENCY_DAYS","LTV","ORDERS","AOV"]].fillna(0).copy()
-                        seg_df["RECENCY_DAYS"] = seg_df["RECENCY_DAYS"].clip(upper=365)
-                        seg_df["LTV"]          = seg_df["LTV"].clip(upper=seg_df["LTV"].quantile(.99))
-                        sc = StandardScaler()
-                        Xs = sc.fit_transform(seg_df)
-                        km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-                        labels = km.fit_predict(Xs)
-                        cd2 = custdf.copy()
-                        cd2["CLUSTER"] = labels
-                        seg_ltv = cd2.groupby("CLUSTER")["LTV"].mean().sort_values(ascending=False)
-                        name_map = {s: n for s, n in zip(
-                            seg_ltv.index,
-                            ["Champions","Loyal","Promising","At Risk","Needs Attention","Lost"][:n_clusters]
-                        )}
-                        cd2["SEGMENT"] = cd2["CLUSTER"].map(name_map)
+- **X-axis (input)**: Days since start (0, 1, 2, 3...)  
+- **Y-axis (output)**: Daily revenue ($)
+- **Formula**: Revenue = slope × day + intercept
+- **Slope > 0** = business growing, **slope < 0** = declining
+- **R² score**: How well the line fits (0.0 = random, 1.0 = perfect fit)
+- **Confidence Band (95% CI)**: The shaded area — actual revenue should fall here 95% of the time
 
-                        # PCA 2D scatter
-                        pca = PCA(n_components=2)
-                        coords = pca.fit_transform(Xs)
-                        cd2["PCA1"] = coords[:,0]; cd2["PCA2"] = coords[:,1]
-                        fig_pca = px.scatter(cd2.head(400), x="PCA1", y="PCA2",
-                                             color="SEGMENT", hover_data=["FULL_NAME","LTV","ORDERS"],
-                                             title=f"Customer Segments — PCA 2D View (var={pca.explained_variance_ratio_.sum()*100:.0f}%)",
-                                             color_discrete_sequence=CLR)
-                        fig_pca.update_layout(**PL, height=400)
-                        st.plotly_chart(fig_pca, use_container_width=True)
-
-                        # Summary
-                        summary = cd2.groupby("SEGMENT").agg(
-                            Customers=("CUST_ID","count"),
-                            Avg_LTV=("LTV","mean"),
-                            Avg_Orders=("ORDERS","mean"),
-                            Avg_Recency=("RECENCY_DAYS","mean"),
-                            Avg_AOV=("AOV","mean"),
-                        ).reset_index()
-
-                        sb1, sb2 = st.columns([2,1])
-                        with sb1:
-                            fig_bar = px.bar(summary, x="SEGMENT", y="Customers",
-                                             color="Avg_LTV", text="Customers",
-                                             title="Segment Size & Avg LTV",
-                                             color_continuous_scale=["#f85149","#3fb950"])
-                            fig_bar.update_layout(**PL, height=320)
-                            st.plotly_chart(fig_bar, use_container_width=True)
-                        with sb2:
-                            disp = summary.copy()
-                            disp["Avg_LTV"]    = disp["Avg_LTV"].map(lambda x: f"${x:,.0f}")
-                            disp["Avg_AOV"]    = disp["Avg_AOV"].map(lambda x: f"${x:,.0f}")
-                            disp["Avg_Orders"] = disp["Avg_Orders"].map(lambda x: f"{x:.1f}")
-                            disp["Avg_Recency"]= disp["Avg_Recency"].map(lambda x: f"{x:.0f}d")
-                            st.dataframe(disp, use_container_width=True, hide_index=True)
-
+**Limitation**: Linear regression assumes the trend continues in a straight line. Real revenue has seasonality and cycles that require more advanced models (ARIMA, Prophet).
+                    """)
+                _explain("forecast")
+                try:
+                    from sklearn.linear_model import LinearRegression
+                    fc1, fc2 = st.columns([3, 1])
+                    with fc2:
+                        horizon = st.slider("Forecast horizon (days)", 7, 90, 30, key="fc_horizon")
+                        show_ci = st.checkbox("Show confidence band", True, key="fc_ci")
+                    # ── Bulletproof data prep ──────────────────────────────
+                    sales3 = sales.copy()
+                    sales3["FULL_DATE"] = pd.to_datetime(sales3["FULL_DATE"], errors="coerce")
+                    sales3["REVENUE"]   = pd.to_numeric(sales3["REVENUE"],   errors="coerce").fillna(0.0)
+                    daily3 = (sales3.groupby("FULL_DATE")["REVENUE"]
+                              .sum().reset_index().sort_values("FULL_DATE")
+                              .dropna(subset=["FULL_DATE"]).reset_index(drop=True))
+                    if len(daily3) < 14:
+                        st.info("Not enough daily data points yet.")
+                    else:
+                        t0 = pd.Timestamp(daily3["FULL_DATE"].iloc[0])
+                        daily3["t"] = [(pd.Timestamp(d) - t0).days for d in daily3["FULL_DATE"]]
+                        X = np.array(daily3["t"].tolist(), dtype=float).reshape(-1, 1)
+                        y = np.array(daily3["REVENUE"].tolist(), dtype=float)
+                        mdl          = LinearRegression().fit(X, y)
+                        resid_std    = float(np.std(y - mdl.predict(X)))
+                        horizon_int  = int(horizon)
+                        last_t       = float(daily3["t"].iloc[-1])
+                        ft           = np.arange(last_t + 1, last_t + horizon_int + 1, dtype=float).reshape(-1, 1)
+                        tmax         = pd.Timestamp(daily3["FULL_DATE"].iloc[-1])
+                        fdates       = pd.date_range(tmax + pd.Timedelta(days=1), periods=horizon_int)
+                        fcast        = np.array(mdl.predict(ft), dtype=float)
+                        slope        = float(mdl.coef_[0])
+                        with fc1:
+                            fig = go.Figure()
+                            fig.add_scatter(
+                                x=daily3["FULL_DATE"], y=y.tolist(), name="Actual",
+                                line=dict(color=CLR[0], width=1.5), opacity=.8,
+                                hovertemplate="<b>%{x}</b><br>Revenue: $%{y:,.0f}<extra>Actual Daily Revenue</extra>")
+                            fig.add_scatter(
+                                x=daily3["FULL_DATE"],
+                                y=pd.Series(y).rolling(7, min_periods=1).mean().tolist(),
+                                name="7d MA", line=dict(color=CLR[1], width=2),
+                                hovertemplate="<b>%{x}</b><br>7-Day Avg: $%{y:,.0f}<extra>Rolling Average</extra>")
+                            fig.add_scatter(
+                                x=fdates, y=fcast.tolist(), name="Forecast",
+                                line=dict(color=CLR[2], width=2.5, dash="dash"),
+                                hovertemplate="<b>%{x}</b><br>Forecast: $%{y:,.0f}<extra>Predicted Revenue</extra>")
+                            if show_ci:
+                                upper = (fcast + 1.96 * resid_std).tolist()
+                                lower = (fcast - 1.96 * resid_std).tolist()
+                                fig.add_scatter(
+                                    x=list(fdates) + list(fdates[::-1]),
+                                    y=upper + lower[::-1],
+                                    fill="toself", fillcolor="rgba(210,153,34,0.12)",
+                                    line=dict(color="rgba(0,0,0,0)"), name="95% CI",
+                                    hoverinfo="skip")
+                            # Mark forecast boundary with a shape line using timestamp
+                            try:
+                                import datetime as _dt
+                                _vx = tmax.timestamp() * 1000  # plotly expects ms for datetime axes
+                                fig.add_shape(type="line",
+                                    x0=tmax, x1=tmax, y0=0, y1=1, yref="paper",
+                                    line=dict(color="#8b949e", width=1.5, dash="dot"))
+                                fig.add_annotation(x=tmax, y=1, yref="paper",
+                                    text="◀ History | Forecast ▶",
+                                    showarrow=False, font=dict(color="#8b949e", size=11),
+                                    xanchor="left", yanchor="bottom")
+                            except Exception:
+                                pass
+                            fig.update_layout(
+                                **PL, title=f"📈 Revenue Forecast — Next {horizon_int} Days",
+                                height=400,
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02))
+                            st.plotly_chart(fig, use_container_width=True)
+                            _explain("forecast")
+                        fc_total  = float(fcast.sum())
+                        r2        = float(mdl.score(X, y))
+                        direction = "📈 upward" if slope > 0 else "📉 downward"
+                        m1, m2, m3, m4 = st.columns(4)
+                        m1.metric("Daily Trend",          f"${slope:+.0f}/day",
+                                  help="Revenue change per day. Positive = growing business.")
+                        m2.metric(f"{horizon_int}d Forecast", fmt(fc_total, "$"),
+                                  help="Total predicted revenue over the forecast window.")
+                        m3.metric("Model R²",             f"{r2:.3f}",
+                                  help="Fit quality: 1.0=perfect, 0.0=random. Above 0.5 is good.")
+                        m4.metric("Volatility (σ)",       fmt(resid_std, "$"),
+                                  help="Standard deviation of daily revenue — how noisy the data is.")
+                        st.info(
+                            f"Revenue is trending **{direction}** at **${slope:+.0f}/day**. "
+                            f"Model explains **{r2*100:.0f}%** of revenue variation (R²={r2:.3f}).")
                         if has_ai:
-                            seg_desc = summary[["SEGMENT","Customers","Avg_LTV"]].to_dict("records")
-                            ai_story(f"K-Means found these segments: {seg_desc}. Give 1 marketing action per segment.")
-                    except Exception as e:
-                        st.warning(f"Segmentation error: {e}")
-            else:
+                            ai_story(
+                                f"Revenue trend ${slope:+.0f}/day, R²={r2:.2f}, "
+                                f"{horizon_int}d forecast=${fc_total:,.0f}. 2-sentence business implication?")
+                except Exception as e:
+                    st.error(f"Forecast error: {e}")
+                    import traceback; st.code(traceback.format_exc())
+
+        # ── Segmentation ──────────────────────────────────────────────
+        elif ml_section == "🎯 Segmentation":
+            st.markdown("#### Customer Segmentation — K-Means + PCA")
+            if custdf.empty or len(custdf) < 10:
                 st.info("Need at least 10 customers.")
-
-        # ── Churn Scoring ─────────────────────────────────────────────────────
-        with ml_tab3:
-            st.markdown("#### Churn Risk Scoring — Rule-Based + Logistic Regression")
-            if not custdf.empty:
-                ch1, ch2 = st.columns([2,1])
-                with ch2:
-                    recency_hi = st.slider("High risk recency (days)", 60, 365, 180, key="ch_hi")
-                    recency_md = st.slider("Medium risk recency (days)", 30, 180, 90, key="ch_md")
-                    min_orders = st.slider("Low order count threshold", 1, 5, 2, key="ch_ord")
-
-                df_ch = custdf.copy()
-
-                def risk_score(row):
-                    s = 0
-                    if row["RECENCY_DAYS"] > recency_hi: s += 3
-                    elif row["RECENCY_DAYS"] > recency_md: s += 2
-                    elif row["RECENCY_DAYS"] > 30: s += 1
-                    if row["ORDERS"] < min_orders: s += 2
-                    if row["LOYALTY_TIER"] == "BRONZE": s += 1
-                    if row["LTV"] < df_ch["LTV"].quantile(.25): s += 1
-                    return s
-
-                df_ch["SCORE"]      = df_ch.apply(risk_score, axis=1)
-                df_ch["CHURN_RISK"] = df_ch["SCORE"].map(
-                    lambda s: "🔴 High" if s >= 5 else ("🟡 Medium" if s >= 3 else "🟢 Low"))
-
-                with ch1:
-                    cnt = df_ch["CHURN_RISK"].value_counts().reset_index()
-                    cnt.columns = ["Risk","Customers"]
-                    fig_pie = px.pie(cnt, names="Risk", values="Customers",
-                                     title="Churn Risk Distribution",
-                                     color_discrete_map={"🔴 High":"#f85149",
-                                                         "🟡 Medium":"#d29922",
-                                                         "🟢 Low":"#3fb950"})
-                    fig_pie.update_layout(**PL, height=320)
-                    st.plotly_chart(fig_pie, use_container_width=True)
-
-                # Score histogram
-                fig_hist = px.histogram(df_ch, x="SCORE", color="CHURN_RISK",
-                                        title="Risk Score Distribution",
-                                        color_discrete_map={"🔴 High":"#f85149",
-                                                            "🟡 Medium":"#d29922",
-                                                            "🟢 Low":"#3fb950"},
-                                        nbins=10)
-                fig_hist.update_layout(**PL, height=280)
-                st.plotly_chart(fig_hist, use_container_width=True)
-
-                # Revenue at risk
-                rev_at_risk = df_ch[df_ch["CHURN_RISK"]=="🔴 High"]["LTV"].sum()
-                r1,r2,r3 = st.columns(3)
-                r1.metric("High Risk Customers", f"{(df_ch['CHURN_RISK']=='🔴 High').sum():,}")
-                r2.metric("Revenue at Risk",     fmt(rev_at_risk,"$"))
-                r3.metric("% of Total LTV",      f"{rev_at_risk/df_ch['LTV'].sum()*100:.1f}%")
-
-                st.markdown("#### 🔴 High-Risk Customer List")
-                high_df = df_ch[df_ch["CHURN_RISK"]=="🔴 High"][
-                    ["FULL_NAME","LOYALTY_TIER","COUNTRY","RECENCY_DAYS","LTV","ORDERS","SCORE"]
-                ].sort_values("LTV", ascending=False).head(15)
-                st.dataframe(high_df, use_container_width=True, hide_index=True)
-
-                if has_ai:
-                    ai_story(f"{(df_ch['CHURN_RISK']=='🔴 High').sum()} high-risk customers, "
-                             f"${rev_at_risk:,.0f} LTV at risk. 3 retention actions for a sporting goods retailer?")
             else:
-                st.info("No customer data available.")
+                with st.expander("📚 Learn: What is K-Means Clustering?", expanded=False):
+                    st.markdown("""
+**K-Means** groups customers into K clusters based on similarity.
 
-        # ── Market Basket ─────────────────────────────────────────────────────
-        with ml_tab4:
+**Features used**: Recency (days since last order), LTV (lifetime spend), Orders (count), AOV (avg order value)
+
+**Algorithm**:
+1. Place K random centroids in feature space
+2. Assign each customer to nearest centroid
+3. Move centroid to mean of its cluster
+4. Repeat until stable
+
+**PCA (Principal Component Analysis)**: Reduces 4 features to 2D so we can visualize clusters. The axes (PCA1, PCA2) are combinations of the original features.
+
+**Business Use**: Target each segment differently — Champions get loyalty rewards, At Risk get win-back offers.
+                    """)
+                _explain("segmentation")
+                try:
+                    from sklearn.preprocessing import StandardScaler
+                    from sklearn.cluster import KMeans
+                    from sklearn.decomposition import PCA as _PCA
+                    seg_col1, seg_col2 = st.columns([3, 1])
+                    with seg_col2:
+                        n_clusters = st.slider("Segments", 2, 6, 4, key="km_k")
+                    seg_df = custdf[["RECENCY_DAYS", "LTV", "ORDERS", "AOV"]].copy()
+                    for _c in ["RECENCY_DAYS", "LTV", "ORDERS", "AOV"]:
+                        seg_df[_c] = pd.to_numeric(seg_df[_c], errors="coerce").fillna(0)
+                    seg_df["RECENCY_DAYS"] = seg_df["RECENCY_DAYS"].clip(upper=365)
+                    seg_df["LTV"] = seg_df["LTV"].clip(upper=float(seg_df["LTV"].quantile(.99)) or 1)
+                    Xs = StandardScaler().fit_transform(seg_df)
+                    labels = KMeans(n_clusters=n_clusters, random_state=42, n_init=10).fit_predict(Xs)
+                    cd2 = custdf.copy()
+                    cd2["CLUSTER"] = labels
+                    name_map = {s: n for s, n in zip(
+                        cd2.groupby("CLUSTER")["LTV"].mean().sort_values(ascending=False).index,
+                        ["Champions", "Loyal", "Promising", "At Risk", "Needs Attention", "Lost"][:n_clusters]
+                    )}
+                    cd2["SEGMENT"] = cd2["CLUSTER"].map(name_map)
+                    pca_ = _PCA(n_components=2)
+                    coords = pca_.fit_transform(Xs)
+                    cd2["PCA1"] = coords[:, 0]
+                    cd2["PCA2"] = coords[:, 1]
+                    with seg_col1:
+                        fig = px.scatter(cd2.head(400), x="PCA1", y="PCA2", color="SEGMENT",
+                                         hover_data=["FULL_NAME", "LTV", "ORDERS"],
+                                         title=f"Segments — PCA 2D (var={pca_.explained_variance_ratio_.sum()*100:.0f}%)",
+                                         color_discrete_sequence=CLR)
+                        fig.update_layout(**PL, height=400)
+                        st.plotly_chart(fig, use_container_width=True)
+                        _explain("segmentation")
+                    summary = cd2.groupby("SEGMENT").agg(
+                        Customers=("CUST_ID", "count"), Avg_LTV=("LTV", "mean"),
+                        Avg_Orders=("ORDERS", "mean"), Avg_Recency=("RECENCY_DAYS", "mean"),
+                    ).reset_index()
+                    sb1, sb2 = st.columns([2, 1])
+                    with sb1:
+                        fig2 = px.bar(summary, x="SEGMENT", y="Customers", color="Avg_LTV",
+                                      text="Customers", title="Segment Size & Avg LTV",
+                                      color_continuous_scale=["#f85149", "#3fb950"])
+                        fig2.update_layout(**PL, height=320)
+                        st.plotly_chart(fig2, use_container_width=True)
+                    with sb2:
+                        disp = summary.copy()
+                        disp["Avg_LTV"] = disp["Avg_LTV"].map(lambda x: f"${x:,.0f}")
+                        disp["Avg_Orders"] = disp["Avg_Orders"].map(lambda x: f"{x:.1f}")
+                        disp["Avg_Recency"] = disp["Avg_Recency"].map(lambda x: f"{x:.0f}d")
+                        st.dataframe(disp, use_container_width=True, hide_index=True)
+                    if has_ai:
+                        ai_story(f"K-Means segments: {summary[['SEGMENT','Customers','Avg_LTV']].to_dict('records')}. "
+                                 f"1 marketing action per segment.")
+                except Exception as e:
+                    st.error(f"Segmentation error: {e}")
+
+        # ── Churn ─────────────────────────────────────────────────────
+        elif ml_section == "🚨 Churn":
+            st.markdown("#### Churn Risk Scoring")
+            if custdf.empty:
+                st.info("No customer data.")
+            else:
+                with st.expander("📚 Learn: What is Churn Prediction?", expanded=False):
+                    st.markdown("""
+**Customer Churn** = a customer stops buying. In retail, "churned" typically means no purchase in 90-180 days.
+
+**Rule-Based Scoring** assigns risk points:
+- Recency > 180 days → +3 points (hasn't bought in 6 months)
+- Orders < 2 → +2 points (only bought once)  
+- Bronze loyalty tier → +1 point (lowest engagement)
+- LTV below 25th percentile → +1 point (low value customer)
+
+**Score ≥ 5 = High Risk** | **Score 3-4 = Medium** | **Score < 3 = Low**
+
+**Business Impact**: Retaining a customer costs 5-7x less than acquiring a new one. Revenue at Risk = LTV of high-risk customers.
+                    """)
+                _explain("churn")
+                try:
+                    ch1, ch2 = st.columns([2, 1])
+                    with ch2:
+                        recency_hi = st.slider("High-risk recency (days)", 60, 365, 180, key="ch_hi")
+                        recency_md = st.slider("Med-risk recency (days)", 30, 180, 90, key="ch_md")
+                        min_orders = st.slider("Low order threshold", 1, 5, 2, key="ch_ord")
+                    df_ch = custdf.copy()
+                    for _c in ["RECENCY_DAYS", "ORDERS", "LTV"]:
+                        df_ch[_c] = pd.to_numeric(df_ch[_c], errors="coerce").fillna(0)
+                    _q25 = float(df_ch["LTV"].quantile(.25))
+                    def _risk(row):
+                        s = 0
+                        r = float(row["RECENCY_DAYS"])
+                        if r > recency_hi: s += 3
+                        elif r > recency_md: s += 2
+                        elif r > 30: s += 1
+                        if float(row["ORDERS"]) < min_orders: s += 2
+                        if row.get("LOYALTY_TIER") == "BRONZE": s += 1
+                        if float(row["LTV"]) < _q25: s += 1
+                        return s
+                    df_ch["SCORE"] = df_ch.apply(_risk, axis=1)
+                    df_ch["CHURN_RISK"] = df_ch["SCORE"].map(
+                        lambda s: "🔴 High" if s >= 5 else ("🟡 Medium" if s >= 3 else "🟢 Low"))
+                    with ch1:
+                        cnt = df_ch["CHURN_RISK"].value_counts().reset_index()
+                        cnt.columns = ["Risk", "Customers"]
+                        fig = px.pie(cnt, names="Risk", values="Customers",
+                                     title="Churn Risk Distribution",
+                                     color_discrete_map={"🔴 High": "#f85149",
+                                                         "🟡 Medium": "#d29922",
+                                                         "🟢 Low": "#3fb950"})
+                        fig.update_layout(**PL, height=320)
+                        st.plotly_chart(fig, use_container_width=True)
+                    fig2 = px.histogram(df_ch, x="SCORE", color="CHURN_RISK", nbins=10,
+                                        title="Score Distribution",
+                                        color_discrete_map={"🔴 High": "#f85149",
+                                                            "🟡 Medium": "#d29922",
+                                                            "🟢 Low": "#3fb950"})
+                    fig2.update_layout(**PL, height=260)
+                    st.plotly_chart(fig2, use_container_width=True)
+                    _explain("churn")
+                    rev_risk = float(df_ch[df_ch["CHURN_RISK"] == "🔴 High"]["LTV"].sum())
+                    tot_ltv = float(df_ch["LTV"].sum()) or 1
+                    r1, r2, r3 = st.columns(3)
+                    r1.metric("High Risk", f"{(df_ch['CHURN_RISK']=='🔴 High').sum():,}")
+                    r2.metric("LTV at Risk", fmt(rev_risk, "$"))
+                    r3.metric("% of Total LTV", f"{rev_risk/tot_ltv*100:.1f}%")
+                    high_df = df_ch[df_ch["CHURN_RISK"] == "🔴 High"][
+                        ["FULL_NAME", "LOYALTY_TIER", "RECENCY_DAYS", "LTV", "ORDERS", "SCORE"]
+                    ].sort_values("LTV", ascending=False).head(15)
+                    st.dataframe(high_df, use_container_width=True, hide_index=True)
+                    if has_ai:
+                        ai_story(f"{len(high_df)} high-risk customers, ${rev_risk:,.0f} LTV at risk. "
+                                 f"3 retention tactics for sporting goods retail?")
+                except Exception as e:
+                    st.error(f"Churn error: {e}")
+
+        # ── Market Basket ─────────────────────────────────────────────
+        elif ml_section == "🛒 Market Basket":
             st.markdown("#### Market Basket Analysis — Product Co-occurrence")
-            if st.button("🔍 Run Market Basket Analysis", type="primary", key="btn_mba"):
-                with st.spinner("Analysing product pairs on Snowflake …"):
+            if st.button("Run Market Basket Analysis", type="primary", key="btn_mba"):
+                with st.spinner("Querying Snowflake …"):
                     try:
                         mba_df = _cast_numerics(sf_query("""
                             WITH PAIRS AS (
                                 SELECT A.PRD_SK AS PROD_A, B.PRD_SK AS PROD_B,
                                        COUNT(DISTINCT A.ORDER_ID) AS CO_OCC
                                 FROM WAREHOUSE.FACT_SALES A
-                                JOIN WAREHOUSE.FACT_SALES B
-                                    ON A.ORDER_ID=B.ORDER_ID AND A.PRD_SK<B.PRD_SK
+                                JOIN WAREHOUSE.FACT_SALES B ON A.ORDER_ID=B.ORDER_ID AND A.PRD_SK<B.PRD_SK
                                 WHERE A.ORDER_STATUS NOT IN ('CANCELLED','RETURNED')
                                 GROUP BY 1,2
                             ),
-                            TOTALS AS (
-                                SELECT COUNT(DISTINCT ORDER_ID) AS TOTAL
-                                FROM WAREHOUSE.FACT_SALES
-                                WHERE ORDER_STATUS NOT IN ('CANCELLED','RETURNED')
-                            )
+                            TOTALS AS (SELECT COUNT(DISTINCT ORDER_ID) AS TOTAL FROM WAREHOUSE.FACT_SALES
+                                       WHERE ORDER_STATUS NOT IN ('CANCELLED','RETURNED'))
                             SELECT PA.PRD_NAME AS PRODUCT_A, PB.PRD_NAME AS PRODUCT_B,
-                                   PA.PRD_CATEGORY AS CAT_A, PB.PRD_CATEGORY AS CAT_B,
                                    P.CO_OCC AS CO_OCCURRENCES,
                                    ROUND(P.CO_OCC*100.0/T.TOTAL,2) AS SUPPORT_PCT
                             FROM PAIRS P
@@ -1233,55 +1369,69 @@ def render():
                         if not mba_df.empty:
                             fig = px.scatter(mba_df.head(20), x="PRODUCT_A", y="PRODUCT_B",
                                              size="CO_OCCURRENCES", color="SUPPORT_PCT",
-                                             title="Product Co-occurrence Matrix",
-                                             color_continuous_scale=["#161b22","#3fb950"])
+                                             title="Product Co-occurrence",
+                                             color_continuous_scale=["#161b22", "#3fb950"])
                             fig.update_layout(**PL, height=400)
                             st.plotly_chart(fig, use_container_width=True)
                             st.dataframe(mba_df, use_container_width=True, hide_index=True)
+                        else:
+                            st.info("No product pairs found.")
                     except Exception as e:
-                        st.error(f"MBA error: {e}")
+                        st.error(f"Market basket error: {e}")
 
-        # ── Anomaly Detection ─────────────────────────────────────────────────
-        with ml_tab5:
+        # ── Anomaly Detection ─────────────────────────────────────────
+        elif ml_section == "📊 Anomaly Detection":
             st.markdown("#### Anomaly Detection — Daily Revenue Outliers")
-            if not sales.empty and len(sales) >= 14:
+            if sales.empty or len(sales) < 14:
+                st.info("Need at least 14 days of data.")
+            else:
+                with st.expander("📚 Learn: What is Anomaly Detection?", expanded=False):
+                    st.markdown("""
+**Isolation Forest** detects outliers by randomly partitioning data. Points that are easy to isolate (few splits needed) are anomalies.
+
+**contamination=0.05** means we expect ~5% of days to be anomalous.
+
+**Why anomalies happen in retail**:
+- Flash sales or promotions → revenue spike
+- System outage or payment failure → revenue dip
+- Major sporting event → unexpected demand
+- Data quality issues → incorrect values
+
+**Action**: Investigate each anomaly — is it a real business event or a data problem?
+                    """)
+                _explain("anomaly")
                 try:
                     from sklearn.ensemble import IsolationForest
-                    ad_df = sales.copy()
-                    ad_df["FULL_DATE"] = pd.to_datetime(ad_df["FULL_DATE"])
-                    daily_rev = (ad_df.groupby("FULL_DATE")["REVENUE"].sum()
-                                     .reset_index().sort_values("FULL_DATE"))
+                    ad = sales.copy()
+                    ad["FULL_DATE"] = pd.to_datetime(ad["FULL_DATE"], errors="coerce")
+                    ad["REVENUE"]   = pd.to_numeric(ad["REVENUE"],   errors="coerce").fillna(0.0)
+                    daily_rev = (ad.groupby("FULL_DATE")["REVENUE"].sum()
+                                 .reset_index().sort_values("FULL_DATE")
+                                 .dropna(subset=["FULL_DATE"]).reset_index(drop=True))
                     daily_rev["REVENUE"] = daily_rev["REVENUE"].astype(float)
                     iso = IsolationForest(contamination=0.05, random_state=42)
                     daily_rev["ANOMALY"] = iso.fit_predict(daily_rev[["REVENUE"]])
                     daily_rev["IS_ANOMALY"] = daily_rev["ANOMALY"] == -1
-
-                    fig = go.Figure()
                     normal = daily_rev[~daily_rev["IS_ANOMALY"]]
-                    outlier= daily_rev[daily_rev["IS_ANOMALY"]]
+                    outlier = daily_rev[daily_rev["IS_ANOMALY"]]
+                    fig = go.Figure()
                     fig.add_scatter(x=normal["FULL_DATE"], y=normal["REVENUE"],
                                     mode="lines+markers", name="Normal",
                                     line=dict(color=CLR[0]), marker=dict(size=4))
                     fig.add_scatter(x=outlier["FULL_DATE"], y=outlier["REVENUE"],
-                                    mode="markers", name="⚠️ Anomaly",
+                                    mode="markers", name="Anomaly",
                                     marker=dict(color="#f85149", size=12, symbol="x"))
-                    fig.update_layout(**PL, title="Revenue Anomaly Detection (Isolation Forest)",
-                                      height=380)
+                    fig.update_layout(**PL, title="Revenue Anomaly Detection (Isolation Forest)", height=380)
                     st.plotly_chart(fig, use_container_width=True)
-
-                    anom_count = int(daily_rev["IS_ANOMALY"].sum())
-                    st.metric("Anomalies detected", f"{anom_count} days")
-
+                    _explain("anomaly")
+                    st.metric("Anomalies detected", f"{int(daily_rev['IS_ANOMALY'].sum())} days")
                     if not outlier.empty:
-                        st.markdown("**Anomalous Days:**")
-                        disp_anom = outlier[["FULL_DATE","REVENUE"]].copy()
-                        disp_anom["REVENUE"] = disp_anom["REVENUE"].map(lambda x: f"${x:,.0f}")
-                        st.dataframe(disp_anom, use_container_width=True, hide_index=True)
-
+                        disp = outlier[["FULL_DATE", "REVENUE"]].copy()
+                        disp["REVENUE"] = disp["REVENUE"].map(lambda x: f"${x:,.0f}")
+                        st.dataframe(disp, use_container_width=True, hide_index=True)
                     if has_ai and not outlier.empty:
                         worst = outlier.sort_values("REVENUE").iloc[0]
-                        ai_story(f"Revenue anomaly detected on {worst['FULL_DATE']:%Y-%m-%d} (${float(worst['REVENUE']):,.0f}). What could cause revenue anomalies in retail and how to investigate?")
+                        ai_story(f"Revenue anomaly {worst['FULL_DATE']:%Y-%m-%d} "
+                                 f"(${float(worst['REVENUE']):,.0f}). Causes and investigation steps?")
                 except Exception as e:
-                    st.warning(f"Anomaly detection error: {e}")
-            else:
-                st.info("Need at least 14 days of data.")
+                    st.error(f"Anomaly detection error: {e}")
