@@ -1,6 +1,7 @@
 """
 conn.py — unified connection manager for the SportZone dashboard.
-Works both locally (.env / keypair) and on Streamlit Cloud (st.secrets).
+Works locally (.env / keypair) AND on Streamlit Cloud (st.secrets).
+Uses psycopg v3 (psycopg package) for Python 3.14 compatibility.
 """
 import re, sys
 from pathlib import Path
@@ -11,24 +12,17 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "deploy"))
 
-# ── Detect environment ────────────────────────────────────────────────────────
-def _on_cloud() -> bool:
-    """True when running on Streamlit Cloud (secrets available)."""
-    try:
-        return bool(st.secrets.get("snowflake"))
-    except Exception:
-        return False
-
-# ── .env helpers (local only) ─────────────────────────────────────────────────
+# ── .env reader (local only) ──────────────────────────────────────────────────
 def _read_env() -> str:
     p = ROOT / ".env"
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
+# ── Neon URL ──────────────────────────────────────────────────────────────────
 def default_neon_url() -> str:
     # 1. Streamlit Cloud secrets
     try:
         v = st.secrets.get("neon", {}).get("connection_string", "")
-        if v:
+        if v and "postgresql" in v:
             return v
     except Exception:
         pass
@@ -40,10 +34,11 @@ def default_neon_url() -> str:
             return m.group(1).strip()
     return ""
 
+# ── Snowflake params ──────────────────────────────────────────────────────────
 def default_snowflake_params() -> dict:
     # 1. Streamlit Cloud secrets
     try:
-        sf = st.secrets.get("snowflake", {})
+        sf = dict(st.secrets.get("snowflake", {}))
         if sf.get("account"):
             params = {
                 "account":   sf["account"],
@@ -52,16 +47,15 @@ def default_snowflake_params() -> dict:
                 "warehouse": sf.get("warehouse", "COMPUTE_WH"),
                 "database":  sf.get("database", "SPORTZONE_DEV"),
                 "schema":    sf.get("schema", "WAREHOUSE"),
+                "authenticator": "snowflake",
             }
             if sf.get("password"):
-                params["password"]      = sf["password"]
-                params["authenticator"] = "snowflake"
+                params["password"] = sf["password"]
             elif sf.get("private_key"):
                 from cryptography.hazmat.primitives.serialization import load_pem_private_key
                 from cryptography.hazmat.backends import default_backend
                 pem = sf["private_key"].encode()
-                params["private_key"]   = load_pem_private_key(pem, None, default_backend())
-                params["authenticator"] = "snowflake"
+                params["private_key"] = load_pem_private_key(pem, None, default_backend())
             return params
     except Exception:
         pass
@@ -72,6 +66,7 @@ def default_snowflake_params() -> dict:
     except Exception:
         return {}
 
+# ── OpenAI key ────────────────────────────────────────────────────────────────
 def default_openai_key() -> str:
     try:
         return st.secrets.get("openai", {}).get("api_key", "")
@@ -85,59 +80,50 @@ def mask_sf(params: dict) -> dict:
     return {k: "***" if k in ("password", "private_key") else v
             for k, v in params.items()}
 
-# ── Neon ──────────────────────────────────────────────────────────────────────
+# ── Neon connection helpers ───────────────────────────────────────────────────
 def get_neon_url() -> str:
     return st.session_state.get("neon_url") or default_neon_url()
 
 def neon_conn():
-    import psycopg2
+    """psycopg v3 connection (Python 3.14 compatible)."""
+    import psycopg
     url = get_neon_url()
-    c = psycopg2.connect(url, connect_timeout=20)
-    c.autocommit = True
+    c = psycopg.connect(url, connect_timeout=20, autocommit=True)
     return c
 
 def neon_query(sql: str, params=None) -> pd.DataFrame:
-    conn = neon_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(sql, params)
-        cols = [d[0] for d in cur.description]
-        return pd.DataFrame(cur.fetchall(), columns=cols)
-    finally:
-        conn.close()
+    with neon_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            cols = [d[0] for d in cur.description]
+            return pd.DataFrame(cur.fetchall(), columns=cols)
 
 def neon_execute(sql: str, params=None):
-    import psycopg2
+    import psycopg
     url = get_neon_url()
-    conn = psycopg2.connect(url, connect_timeout=30)
-    conn.autocommit = False
-    try:
-        cur = conn.cursor()
-        cur.execute(sql, params)
+    with psycopg.connect(url, connect_timeout=30) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
         conn.commit()
-    finally:
-        conn.close()
 
 def test_neon(url: str) -> tuple[bool, str]:
     try:
-        import psycopg2
-        conn = psycopg2.connect(url, connect_timeout=10)
-        cur  = conn.cursor()
-        cur.execute("SELECT current_database(), current_user, version()")
-        db, user, ver = cur.fetchone()
-        conn.close()
+        import psycopg
+        with psycopg.connect(url, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT current_database(), current_user, version()")
+                db, user, ver = cur.fetchone()
         return True, f"✅ db={db}, user={user}, pg={ver.split(',')[0]}"
     except Exception as e:
         return False, f"❌ {e}"
 
-# ── Snowflake ─────────────────────────────────────────────────────────────────
+# ── Snowflake helpers ─────────────────────────────────────────────────────────
 def _sf_params() -> dict:
     return st.session_state.get("sf_params") or default_snowflake_params()
 
 def sf_conn():
     import snowflake.connector
-    params = _sf_params()
-    conn = snowflake.connector.connect(**params)
+    conn = snowflake.connector.connect(**_sf_params())
     conn.cursor().execute("USE DATABASE SPORTZONE_DEV")
     conn.cursor().execute("USE WAREHOUSE COMPUTE_WH")
     return conn
@@ -145,9 +131,8 @@ def sf_conn():
 @st.cache_data(ttl=60, show_spinner=False)
 def sf_query(sql: str) -> pd.DataFrame:
     import snowflake.connector
-    params = _sf_params()
-    conn   = snowflake.connector.connect(**params)
-    cur    = conn.cursor(snowflake.connector.DictCursor)
+    conn = snowflake.connector.connect(**_sf_params())
+    cur  = conn.cursor(snowflake.connector.DictCursor)
     cur.execute("USE DATABASE SPORTZONE_DEV")
     cur.execute("USE WAREHOUSE COMPUTE_WH")
     cur.execute(sql)
@@ -179,8 +164,7 @@ def test_snowflake(params: dict) -> tuple[bool, str]:
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────
 def get_openai_key() -> str:
-    return (st.session_state.get("openai_key")
-            or default_openai_key())
+    return st.session_state.get("openai_key") or default_openai_key()
 
 def ask_openai(prompt: str, system: str = "") -> str:
     key = get_openai_key()

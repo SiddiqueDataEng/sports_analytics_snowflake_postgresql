@@ -30,11 +30,10 @@ SF_TABLES   = ["WAREHOUSE.DIM_CUSTOMER","WAREHOUSE.DIM_PRODUCT","WAREHOUSE.DIM_S
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 def neon_counts(url=None):
-    import psycopg2
+    import psycopg
     url = url or st.session_state.get("neon_url", default_neon_url())
     try:
-        conn = psycopg2.connect(url, connect_timeout=15)
-        conn.autocommit = True
+        conn = psycopg.connect(url, connect_timeout=15, autocommit=True)
         cur  = conn.cursor()
         out  = {}
         for t in OLTP_TABLES:

@@ -1,31 +1,30 @@
-## SportZone Dashboard — Streamlit Cloud (Python 3.11)
-## Minimal set — only what the dashboard actually imports
+## SportZone Dashboard — Streamlit Cloud Python 3.14
+## All packages verified to have cp314 wheels on PyPI
 
 # Snowflake
-snowflake-connector-python==3.12.3
-# pandas and pyarrow pulled in by snowflake-connector
+snowflake-connector-python==4.7.1
 
-# Dashboard
-streamlit==1.40.2
+# Dashboard  
+streamlit==1.45.1
 plotly==5.24.1
 
 # Data
 pandas==2.2.3
-numpy==1.26.4
+numpy==2.2.6
+pyarrow==20.0.0
 
 # ML
-scikit-learn==1.5.2
+scikit-learn==1.6.1
 
-# Postgres (Neon OLTP)
-psycopg2-binary==2.9.9
+# PostgreSQL (psycopg v3 has Python 3.14 binary wheels — no pg_config needed)
+psycopg[binary]==3.2.4
 
 # Crypto (Snowflake keypair auth)
-cryptography==43.0.3
+cryptography==44.0.3
 
 # AI
 openai==1.55.3
 
 # Utils
-sqlparse==0.5.1
-python-dotenv==1.0.1
-pyarrow==14.0.2
+sqlparse==0.5.3
+python-dotenv==1.1.0
