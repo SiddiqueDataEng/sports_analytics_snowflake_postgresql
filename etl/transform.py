@@ -201,10 +201,19 @@ def transform_stores(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     raw["_SRC_FILE"]   = "oltp.store"
     raw["_LOAD_TS"]    = datetime.now(timezone.utc)
 
-    stg = raw.copy()
-    stg["STORE_TYPE"] = stg["STORE_TYPE"].str.upper()
-    stg["REGION"]     = stg["REGION"].fillna("").str.upper()
-    stg["COUNTRY"]    = stg["COUNTRY"].fillna("").str.upper()
+    stg = pd.DataFrame()
+    stg["STORE_ID"]    = raw["STORE_ID"]
+    stg["STORE_NAME"]  = raw["STORE_NAME"]
+    stg["STORE_TYPE"]  = raw["STORE_TYPE"].str.upper()
+    stg["REGION"]      = raw["REGION"].fillna("").str.upper()
+    stg["ADDRESS"]     = raw["ADDRESS"]
+    stg["CITY"]        = raw["CITY"]
+    stg["STATE"]       = raw["STATE"]
+    stg["ZIP_CODE"]    = raw["ZIP_CODE"]
+    stg["COUNTRY"]     = raw["COUNTRY"].fillna("").str.upper()
+    stg["OPEN_DATE"]   = raw["OPEN_DATE"]
+    stg["MANAGER_NAME"]= raw["MANAGER_NAME"]
+    stg["_LOAD_TS"]    = raw["_LOAD_TS"]
     return raw, stg
 
 
@@ -287,7 +296,7 @@ def transform_order_items(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]
     raw["_SRC_FILE"]     = "oltp.order_item"
     raw["_LOAD_TS"]      = datetime.now(timezone.utc)
 
-    # STG_ORDER_ITEMS does NOT have _SRC_FILE — select only schema columns
+    # STG_ORDER_ITEMS does NOT have _SRC_FILE or GROSS_REVENUE — select only schema columns
     stg = pd.DataFrame()
     stg["ORDER_ITEM_ID"] = raw["ORDER_ITEM_ID"]
     stg["ORDER_ID"]      = raw["ORDER_ID"]
@@ -297,7 +306,6 @@ def transform_order_items(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]
     stg["DISCOUNT_PCT"]  = raw["DISCOUNT_PCT"]
     stg["LINE_TOTAL"]    = raw["LINE_TOTAL"]
     stg["DISCOUNT_AMT"]  = (raw["UNIT_PRICE"] * raw["QTY"] * raw["DISCOUNT_PCT"] / 100).round(2)
-    stg["GROSS_REVENUE"] = (raw["UNIT_PRICE"] * raw["QTY"]).round(2)
     stg["_LOAD_TS"]      = datetime.now(timezone.utc)
     return raw, stg
 

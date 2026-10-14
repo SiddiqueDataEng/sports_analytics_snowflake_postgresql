@@ -117,6 +117,7 @@ EXTRACT_QUERIES = {
             o.customer_id,
             o.store_id,
             o.promotion_id,
+            pr.code                               AS promo_code,
             o.channel,
             o.order_status,
             o.order_date,
@@ -131,6 +132,7 @@ EXTRACT_QUERIES = {
             o.created_at,
             o.updated_at
         FROM oltp.order_header o
+        LEFT JOIN oltp.promotion pr ON o.promotion_id = pr.promotion_id
         WHERE o.updated_at > %(watermark)s
         ORDER BY o.updated_at
     """,
@@ -202,9 +204,9 @@ EXTRACT_QUERIES = {
 # Map extract key → watermark table key
 WATERMARK_KEYS = {
     "customers":      "customer",
-    "products":       "order_item",    # products don't have watermark row; use created_at
-    "stores":         "order_item",
-    "promotions":     "order_item",
+    "products":       "product",
+    "stores":         "store",
+    "promotions":     "promotion",
     "orders":         "order_header",
     "order_items":    "order_item",
     "payments":       "payment",
@@ -227,7 +229,6 @@ def get_watermark(cur, key: str) -> datetime:
     if row:
         return row[0]
     return datetime(1970, 1, 1, tzinfo=timezone.utc)
-
 
 def update_watermark(cur, key: str, ts: datetime, rows: int):
     cur.execute("""
@@ -255,6 +256,10 @@ def run_extract(tables: list[str] = None, full_load: bool = False) -> dict[str, 
     """
     Extract changed data from OLTP into Parquet files.
     Returns dict of {table_name: parquet_path}.
+
+    Co-extraction rule: if order_items has new rows, orders is always
+    re-extracted using the same watermark so STG_ORDERS stays populated
+    for the FACT_SALES MERGE.
     """
     conn = get_neon_conn_impl()
     cur  = conn.cursor()
@@ -297,6 +302,20 @@ def run_extract(tables: list[str] = None, full_load: bool = False) -> dict[str, 
             update_watermark(cur, wm_key, new_wm.to_pydatetime(), len(df))
 
         outputs[name] = out_path
+
+    # ── Co-extraction: if order_items extracted but orders didn't, pull orders
+    # using epoch so STG_ORDERS is always populated for the FACT_SALES MERGE.
+    if "order_items" in outputs and "orders" not in outputs:
+        logger.info("  %-20s  co-extracting (order_items present) …", "orders")
+        df_orders = extract_table(cur, "orders", datetime(1970, 1, 1, tzinfo=timezone.utc))
+        if not df_orders.empty:
+            out_dir  = STAGING_DIR / "orders"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / f"{ts_str}.parquet"
+            df_orders.to_parquet(out_path, index=False, compression="gzip")
+            logger.info("  %-20s  %d rows (co-extract) → %s", "orders", len(df_orders), out_path.name)
+            outputs["orders"] = out_path
+            # Do NOT advance the orders watermark — it was not genuinely updated
 
     conn.commit()
     cur.close()

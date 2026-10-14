@@ -204,7 +204,7 @@ USING (
         dp.GROSS_MARGIN_PCT::FLOAT                             AS GROSS_MARGIN_PCT,
         oi.DISCOUNT_PCT::FLOAT                                 AS DISCOUNT_PCT,
         oi.DISCOUNT_AMT::FLOAT                                 AS DISCOUNT_AMT,
-        oi.GROSS_REVENUE::FLOAT                                AS GROSS_REVENUE,
+        (oi.QTY::FLOAT * oi.UNIT_PRICE::FLOAT)                AS GROSS_REVENUE,
         oi.LINE_TOTAL::FLOAT                                   AS NET_REVENUE,
         (oi.QTY::FLOAT * COALESCE(dp.UNIT_COST::FLOAT, 0))    AS COGS,
         (oi.LINE_TOTAL::FLOAT - oi.QTY::FLOAT * COALESCE(dp.UNIT_COST::FLOAT, 0)) AS GROSS_PROFIT
@@ -275,9 +275,22 @@ TRUNCATE_STAGING = [
 # Load helpers
 # ---------------------------------------------------------------------------
 
-def truncate_staging(conn):
+def truncate_staging(conn, tables_loaded: list[str] = None):
+    """
+    Truncate only the staging tables that are about to be reloaded.
+    If tables_loaded is None, truncate all. Otherwise only truncate
+    the ones whose data is being refreshed this run to avoid leaving
+    dependent tables (e.g. STG_ORDERS) empty when only order_items loaded.
+    """
     cur = conn.cursor()
     for tbl in TRUNCATE_STAGING:
+        # Derive the short name, e.g. "STAGING.STG_ORDERS" → "STG_ORDERS"
+        short = tbl.split(".")[-1]
+        # Only truncate if we're actually loading this table this run
+        if tables_loaded is not None:
+            if not any(short in t.upper() for t in tables_loaded):
+                logger.debug("  SKIP truncate %s (not in this run)", tbl)
+                continue
         try:
             cur.execute(f"TRUNCATE TABLE SPORTZONE_DEV.{tbl}")
             logger.debug("  TRUNCATE %s", tbl)
@@ -294,10 +307,28 @@ def df_to_snowflake(conn, df: pd.DataFrame, database: str, schema: str, table: s
     # Snowflake column names must be uppercase
     df.columns = [c.upper() for c in df.columns]
 
-    # Convert dates/timestamps to strings (connector handles them better)
-    for col in df.select_dtypes(include=["datetime64[ns]","datetime64[ns, UTC]","object"]).columns:
-        if "date" in col.lower() or "ts" in col.lower() or "at" in col.lower():
-            df[col] = df[col].astype(str).replace("NaT","").replace("None","")
+    # Convert Python date/datetime objects to strings so the connector handles them reliably.
+    # Keep None as None (not empty string) so Snowflake inserts NULL for date columns.
+    for col in df.columns:
+        if df[col].dtype == object or str(df[col].dtype).startswith("datetime"):
+            # Convert date/datetime objects to ISO strings; leave None/NaT as None
+            def _to_str(v):
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    return None
+                try:
+                    import datetime as _dt
+                    if isinstance(v, (_dt.date, _dt.datetime)):
+                        return v.isoformat()
+                except Exception:
+                    pass
+                s = str(v)
+                return None if s in ("NaT", "None", "nan", "") else s
+
+            if any(isinstance(v, __import__("datetime").date) for v in df[col].dropna()):
+                df[col] = df[col].apply(_to_str)
+
+    # Replace pandas NA/NaT with None so the connector writes NULL
+    df = df.where(pd.notnull(df), None)
 
     success, n_chunks, n_rows, output = write_pandas(
         conn, df,
@@ -310,17 +341,22 @@ def df_to_snowflake(conn, df: pd.DataFrame, database: str, schema: str, table: s
     return n_rows
 
 
-def run_warehouse_merges(conn):
-    """Execute all DIM + FACT MERGE statements."""
+def run_warehouse_merges(conn) -> dict[str, int]:
+    """Execute all DIM + FACT MERGE statements. Returns {table: rows_affected}."""
     cur = conn.cursor()
     logger.info("  Running WAREHOUSE merges …")
+    results = {}
     for name, sql in WAREHOUSE_MERGES.items():
         try:
             cur.execute(sql)
-            logger.info("    MERGE %-20s  [%d rows affected]", name, cur.rowcount)
+            affected = cur.rowcount
+            results[f"WAREHOUSE.{name}"] = affected
+            logger.info("    MERGE %-20s  [%d rows affected]", name, affected)
         except Exception as e:
             logger.error("    MERGE %s FAILED: %s", name, e)
+            results[f"WAREHOUSE.{name}"] = -1
     cur.close()
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -337,8 +373,8 @@ def run_load(transformed: dict[str, pd.DataFrame]) -> dict[str, int]:
 
     logger.info("=== LOAD phase ===")
 
-    # 1 — Truncate staging (fresh load each run)
-    truncate_staging(conn)
+    # 1 — Truncate only staging tables that are being reloaded this run
+    truncate_staging(conn, tables_loaded=list(transformed.keys()))
 
     # 2 — Load RAW + STAGING tables
     for full_table, df in transformed.items():
@@ -362,7 +398,8 @@ def run_load(transformed: dict[str, pd.DataFrame]) -> dict[str, int]:
             results[full_table] = -1
 
     # 3 — Warehouse MERGE (dims + facts)
-    run_warehouse_merges(conn)
+    merge_results = run_warehouse_merges(conn)
+    results.update(merge_results)
 
     conn.close()
     logger.info("Load complete.\n")
