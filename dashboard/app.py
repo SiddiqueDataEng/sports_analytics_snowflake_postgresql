@@ -18,9 +18,9 @@ st.set_page_config(
 
 from conn import default_neon_url, default_snowflake_params
 
-if "neon_url"    not in st.session_state: st.session_state["neon_url"]    = default_neon_url()
-if "sf_params"   not in st.session_state: st.session_state["sf_params"]   = default_snowflake_params()
-if "openai_key"  not in st.session_state: st.session_state["openai_key"]  = ""
+if "neon_url"     not in st.session_state: st.session_state["neon_url"]     = default_neon_url()
+if "sf_params"    not in st.session_state: st.session_state["sf_params"]    = default_snowflake_params()
+if "openai_key"   not in st.session_state: st.session_state["openai_key"]   = ""
 if "pipeline_log" not in st.session_state: st.session_state["pipeline_log"] = []
 
 st.markdown("""
@@ -45,11 +45,40 @@ with st.sidebar:
     st.markdown("## 🏆 SportZone")
     st.markdown("**Data Engineering Platform**")
     st.divider()
-    page = st.radio("", [
+    page = st.radio("Navigation", [
         "🔧 Management & ETL",
         "📊 Analytics Dashboard",
     ], label_visibility="collapsed")
     st.divider()
+
+    # ── Snowflake MFA (TOTP) code ─────────────────────────────
+    sf_params = st.session_state.get("sf_params") or {}
+    has_code = bool(sf_params.get("passcode"))
+    with st.expander("❄️ Snowflake MFA code", expanded=not has_code):
+        totp = st.text_input(
+            "Authenticator code (6 digits)",
+            max_chars=6,
+            key="totp_input",
+            help="Only needed if your Snowflake user requires MFA.",
+        )
+        c1, c2 = st.columns(2)
+        if c1.button("Apply", use_container_width=True):
+            if totp.strip().isdigit() and len(totp.strip()) == 6:
+                new_params = dict(sf_params)
+                new_params["passcode"] = totp.strip()
+                st.session_state["sf_params"] = new_params
+                st.session_state.pop("sf_conn", None)   # force reconnect
+                st.rerun()
+            else:
+                st.error("Enter the 6-digit code.")
+        if c2.button("Clear", use_container_width=True):
+            new_params = dict(sf_params)
+            new_params.pop("passcode", None)
+            st.session_state["sf_params"] = new_params
+            st.session_state.pop("sf_conn", None)
+            st.rerun()
+    st.divider()
+
     neon_ok = "🟢" if st.session_state.get("neon_url") else "🔴"
     sf_ok   = "🟢" if st.session_state.get("sf_params") else "🔴"
     ai_ok   = "🟢" if st.session_state.get("openai_key") else "🔴"
