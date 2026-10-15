@@ -15,7 +15,8 @@ ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from conn import (default_neon_url, default_snowflake_params, mask_url,
-                  mask_sf, test_neon, test_snowflake, neon_query, sf_query)
+                  mask_sf, test_neon, test_snowflake, neon_query, sf_query,
+                  sf_live_conn)
 
 BG = "#0d1117"; BG2 = "#161b22"; FONT = "#f0f6fc"; GRID = "#30363d"
 PL = dict(paper_bgcolor=BG, plot_bgcolor=BG2, font=dict(color=FONT),
@@ -48,21 +49,28 @@ def neon_counts(url=None):
         return {t: 0 for t in OLTP_TABLES}
 
 def sf_counts():
-    import snowflake.connector
-    params = st.session_state.get("sf_params", default_snowflake_params())
+    """Row counts from the shared Snowflake connection.
+    Never opens a new login (a TOTP code works only once) — it only uses the
+    connection created by 'Test Snowflake'."""
+    conn = sf_live_conn()
+    if conn is None:
+        return {t: 0 for t in SF_TABLES}
+    out = {}
+    cur = conn.cursor()
     try:
-        conn = snowflake.connector.connect(**params)
-        cur  = conn.cursor()
         cur.execute("USE DATABASE SPORTZONE_DEV")
         cur.execute("USE WAREHOUSE COMPUTE_WH")
-        out  = {}
         for t in SF_TABLES:
-            cur.execute(f"SELECT COUNT(*) FROM {t}")
-            out[t] = cur.fetchone()[0]
-        conn.close()
-        return out
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM {t}")
+                out[t] = cur.fetchone()[0]
+            except Exception:
+                out[t] = 0
     except Exception:
-        return {t: 0 for t in SF_TABLES}
+        out = {t: 0 for t in SF_TABLES}
+    finally:
+        cur.close()
+    return out
 
 def bar_before_after(before, after, title):
     labels = [k.split(".")[-1] for k in before]
@@ -192,6 +200,13 @@ def render():
                         new_sf["authenticator"] = "snowflake"
                     st.session_state["sf_params"] = new_sf
 
+            if sf_live_conn() is not None:
+                st.caption("🟢 Snowflake session is open — queries reuse it, no new MFA code needed.")
+            elif st.session_state.get("sf_totp"):
+                st.caption("🟡 MFA code applied — click **Test Snowflake** now (codes expire in ~30 s).")
+            else:
+                st.caption("🔴 Not connected — enter the MFA code in the sidebar, click Apply, then Test Snowflake.")
+
             t1, t2 = st.columns(2)
             if t1.button("🔌 Test Snowflake", key="btn_test_sf"):
                 with st.spinner("Connecting …"):
@@ -265,376 +280,4 @@ def render():
                 st.success(f"✅ Generated **{added:,} new rows** across all OLTP tables.")
                 bar_before_after(before, after, "OLTP — Before vs After")
             except Exception as e:
-                st.error(f"Generation failed: {e}")
-            finally:
-                progress.empty(); log_out.empty()
-
-    # ══════════════════════════════════════════════════
-    # TAB 3 — ETL Pipeline
-    # ══════════════════════════════════════════════════
-    with tab_etl:
-        st.markdown("### ▶️ ETL Pipeline — Neon OLTP → Snowflake DWH")
-
-        col_opts, col_stats = st.columns([1, 2])
-
-        with col_opts:
-            st.markdown("#### Pipeline Options")
-            load_mode = st.radio("Load Mode", [
-                "🔄 Incremental (watermark)",
-                "⬇️ Full Reload",
-                "🪟 Window/Snapshot",
-            ], key="etl_mode")
-
-            st.divider()
-            dry_run = st.checkbox("🧪 Dry-run (no write)", value=False, key="etl_dry")
-
-            if "🪟" in load_mode:
-                wstart = st.date_input("Window Start", key="w_start")
-                wend   = st.date_input("Window End",   key="w_end")
-
-            st.divider()
-            st.markdown("##### Idempotency")
-            st.markdown("""
-- **Incremental**: uses `etl_watermark` table to only process new rows since last run
-- **Full Reload**: truncates staging, reloads all data from scratch
-- **Window**: extracts only rows within the specified date range
-- All fact loads use `ON CONFLICT DO NOTHING` — safe to re-run
-""")
-
-        with col_stats:
-            st.markdown("#### Current DWH State (Snowflake)")
-            with st.spinner("Reading Snowflake …"):
-                sf_c = sf_counts()
-            c1,c2,c3 = st.columns(3)
-            items = list(sf_c.items())
-            for i,(t,v) in enumerate(items):
-                [c1,c2,c3][i%3].metric(t.split(".")[-1], f"{v:,}")
-
-        st.divider()
-
-        if st.button("▶️ Run ETL Pipeline", type="primary", key="btn_run_etl"):
-            sf_before = dict(sf_c)
-            progress  = st.progress(0, "Initialising …")
-            log_area  = st.empty()
-            logs      = []
-
-            cmd = [sys.executable, str(ROOT/"etl"/"pipeline.py")]
-            if "Full" in load_mode:    cmd.append("--full-load")
-            if dry_run:                cmd.append("--dry-run")
-
-            try:
-                proc = subprocess.Popen(cmd, cwd=str(ROOT),
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                pct = 0
-                for ln in proc.stdout:
-                    ln = ln.strip()
-                    if ln and not ln.startswith("C:\\") and len(ln) < 300:
-                        logs.append(ln)
-                        log_area.code("\n".join(logs[-30:]))
-                        pct = min(pct+2, 95)
-                        progress.progress(pct, "Running …")
-                proc.wait()
-                progress.progress(100, "Complete!")
-                sf_after = sf_counts()
-                added = sum(max(0,sf_after.get(t,0)-sf_before.get(t,0)) for t in SF_TABLES)
-                if dry_run:
-                    st.info("Dry-run complete — no data written.")
-                elif added > 0:
-                    st.success(f"✅ ETL complete — **{added:,} new rows** in Snowflake DWH.")
-                    bar_before_after(sf_before, sf_after, "Snowflake DWH — Before vs After ETL")
-                    # Clear cached sf_query results so analytics page shows fresh data
-                    st.cache_data.clear()
-                else:
-                    st.success("✅ ETL complete — DWH already up to date.")
-                    st.cache_data.clear()
-            except Exception as e:
-                st.error(f"ETL failed: {e}")
-            finally:
-                progress.empty()
-
-        st.divider()
-        st.markdown("#### ⏰ Watermark State")
-        try:
-            wm_df = neon_query("""
-                SELECT table_name, last_extracted, last_run_at, rows_extracted
-                FROM oltp.etl_watermark ORDER BY table_name
-            """)
-            if not wm_df.empty:
-                st.dataframe(wm_df, use_container_width=True, hide_index=True)
-        except Exception as e:
-            st.warning(f"Could not load watermarks: {e}")
-
-    # ══════════════════════════════════════════════════
-    # TAB 4 — Monitoring
-    # ══════════════════════════════════════════════════
-    with tab_mon:
-        st.markdown("### 📈 Pipeline Health & Monitoring")
-
-        log_df = load_pipeline_log()
-
-        if log_df.empty:
-            st.info("No pipeline runs recorded yet. Run the ETL pipeline first.")
-        else:
-            # Summary KPIs
-            k1,k2,k3,k4 = st.columns(4)
-            k1.metric("Total Runs",    len(log_df))
-            k2.metric("Success Rate",  f"{(log_df['Status']=='OK').mean()*100:.0f}%")
-            k3.metric("Avg Duration",  f"{log_df['Duration(s)'].mean():.1f}s")
-            k4.metric("Total Rows ETL'd", f"{log_df['Rows'].sum():,}")
-
-            # Timeline chart
-            fig = go.Figure()
-            colors = {"OK":"#3fb950","FAILED":"#f85149","DRY-RUN":"#d29922","NOOP":"#8b949e"}
-            for status, grp in log_df.groupby("Status"):
-                fig.add_scatter(x=grp["Timestamp"], y=grp["Duration(s)"],
-                                mode="markers+lines", name=status,
-                                marker=dict(color=colors.get(status,"#58a6ff"), size=10),
-                                line=dict(width=1.5))
-            fig.update_layout(**PL, title="Pipeline Run History — Duration over Time",
-                              height=300, xaxis_title="", yaxis_title="Duration (s)")
-            st.plotly_chart(fig, use_container_width=True)
-
-            # Log table
-            st.dataframe(log_df.iloc[::-1], use_container_width=True, hide_index=True)
-
-        st.divider()
-        st.markdown("### ❄️ Snowflake Query History (last 10)")
-        if st.button("🔍 Fetch SF Query History", key="btn_sf_hist"):
-            with st.spinner():
-                try:
-                    df = sf_query("""
-                        SELECT QUERY_TEXT, EXECUTION_STATUS,
-                               ROUND(TOTAL_ELAPSED_TIME/1000,2) AS ELAPSED_SEC,
-                               BYTES_SCANNED/1024/1024 AS MB_SCANNED,
-                               START_TIME, USER_NAME
-                        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-                        WHERE START_TIME >= DATEADD(HOUR,-24,CURRENT_TIMESTAMP())
-                          AND QUERY_TEXT NOT LIKE '%ACCOUNT_USAGE%'
-                        ORDER BY START_TIME DESC
-                        LIMIT 10
-                    """)
-                    if df.empty:
-                        st.info("No recent queries found (may take up to 45 min to appear in ACCOUNT_USAGE).")
-                    else:
-                        st.dataframe(df, use_container_width=True, hide_index=True)
-                except Exception as e:
-                    st.error(str(e))
-
-        st.markdown("### 🐘 Neon Live Stats")
-        if st.button("📊 Fetch Neon Stats", key="btn_neon_stats"):
-            with st.spinner():
-                try:
-                    df = neon_query("""
-                        SELECT schemaname, tablename,
-                               n_live_tup AS live_rows,
-                               n_dead_tup AS dead_rows,
-                               last_autovacuum, last_autoanalyze
-                        FROM pg_stat_user_tables
-                        WHERE schemaname IN ('oltp','raw','staging','warehouse')
-                        ORDER BY live_rows DESC
-                    """)
-                    st.dataframe(df, use_container_width=True, hide_index=True)
-                except Exception as e:
-                    st.error(str(e))
-
-    # ══════════════════════════════════════════════════
-    # TAB 5 — Data Lineage
-    # ══════════════════════════════════════════════════
-    with tab_lin:
-        st.markdown("### 🔀 Data Lineage — Visual Flow Diagram")
-
-        # ── Plotly Sankey / node diagram ──────────────────────────────────────
-        # Nodes: each layer + key tables
-        node_labels = [
-            # OLTP (0-8)
-            "Neon OLTP\nsportzone",
-            "oltp.customer", "oltp.order_header", "oltp.order_item",
-            "oltp.product",  "oltp.inventory",    "oltp.promotion",
-            # ETL (7-8)
-            "extract.py\n(watermark)", "transform.py\n(cleanse+cast)",
-            # RAW (9-15)
-            "RAW.RAW_CUSTOMERS", "RAW.RAW_ORDERS", "RAW.RAW_ORDER_ITEMS",
-            "RAW.RAW_PRODUCTS",  "RAW.RAW_INVENTORY", "RAW.RAW_PROMOTIONS",
-            # STAGING (15-20)
-            "STG_CUSTOMERS", "STG_ORDERS", "STG_ORDER_ITEMS",
-            "STG_PRODUCTS",  "STG_INVENTORY",
-            # WAREHOUSE (20-26)
-            "DIM_CUSTOMER", "DIM_PRODUCT", "DIM_STORE",
-            "DIM_PROMOTION", "FACT_SALES", "FACT_INVENTORY",
-            # MART (26-29)
-            "MART.DAILY_SALES", "MART.CUSTOMER_360", "MART.INVENTORY_STATUS",
-        ]
-
-        # Colours per layer
-        node_colors = (
-            ["#388bfd"] +                    # Neon DB
-            ["#1f6feb"] * 6 +               # OLTP tables
-            ["#d29922"] * 2 +               # ETL steps
-            ["#da3633"] * 6 +               # RAW
-            ["#f0883e"] * 5 +               # STAGING
-            ["#3fb950"] * 6 +               # WAREHOUSE
-            ["#bc8cff"] * 3                 # MART
-        )
-
-        # Edges: (source_idx, target_idx, value, label)
-        edges = [
-            # OLTP → extract
-            (1,7,3,"customer"), (2,7,5,"orders"), (3,7,5,"items"),
-            (4,7,2,"products"), (5,7,2,"inventory"), (6,7,1,"promotions"),
-            # extract → transform
-            (7,8,18,"parquet files"),
-            # transform → RAW
-            (8,9,3,"customers"), (8,10,5,"orders"), (8,11,5,"items"),
-            (8,12,2,"products"), (8,13,2,"inventory"), (8,14,1,"promotions"),
-            # RAW → STAGING (cleanse)
-            (9,15,3,"typed"), (10,16,5,"deduped"), (11,17,5,"enriched"),
-            (12,18,2,"margin%"), (13,19,2,"available"),
-            # STAGING → WAREHOUSE dims
-            (15,20,3,"SCD2"), (18,21,2,"SCD2"),
-            (16,22,1,"upsert"), (16,23,1,"upsert"),
-            # STAGING → WAREHOUSE facts
-            (16,24,5,"MERGE"), (17,24,5,"MERGE"),
-            (19,25,2,"MERGE"),
-            # WAREHOUSE → MART
-            (24,26,5,"views"), (20,27,3,"views"), (25,28,2,"views"),
-        ]
-
-        src   = [e[0] for e in edges]
-        tgt   = [e[1] for e in edges]
-        vals  = [e[2] for e in edges]
-        elabels = [e[3] for e in edges]
-
-        edge_colors = []
-        for s in src:
-            if s <= 6:   edge_colors.append("rgba(31,111,235,0.4)")   # OLTP blue
-            elif s <= 8: edge_colors.append("rgba(210,153,34,0.5)")   # ETL amber
-            elif s <= 14:edge_colors.append("rgba(218,54,51,0.4)")    # RAW red
-            elif s <= 19:edge_colors.append("rgba(240,136,62,0.4)")   # STG orange
-            else:        edge_colors.append("rgba(63,185,80,0.4)")    # WH green
-
-        fig_sankey = go.Figure(go.Sankey(
-            arrangement="snap",
-            node=dict(
-                pad=20, thickness=22, line=dict(color="#30363d", width=0.5),
-                label=node_labels,
-                color=node_colors,
-                hovertemplate="%{label}<extra></extra>",
-            ),
-            link=dict(
-                source=src, target=tgt, value=vals,
-                label=elabels,
-                color=edge_colors,
-                hovertemplate="%{label}: %{value} tables<extra></extra>",
-            ),
-        ))
-        fig_sankey.update_layout(
-            title_text="SportZone Data Lineage — Medallion Architecture Flow",
-            font=dict(size=11, color="#f0f6fc"),
-            paper_bgcolor="#0d1117",
-            height=560,
-            margin=dict(l=10, r=10, t=48, b=10),
-        )
-        st.plotly_chart(fig_sankey, use_container_width=True)
-
-        # ── Layer legend ──────────────────────────────────────────────────────
-        st.markdown("""
-<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:4px">
-  <span style="background:#1f6feb;padding:4px 12px;border-radius:12px;font-size:.8rem">🟦 Neon OLTP Source</span>
-  <span style="background:#d29922;padding:4px 12px;border-radius:12px;font-size:.8rem">🟨 ETL Pipeline</span>
-  <span style="background:#da3633;padding:4px 12px;border-radius:12px;font-size:.8rem">🟥 RAW Layer (Bronze)</span>
-  <span style="background:#f0883e;padding:4px 12px;border-radius:12px;font-size:.8rem">🟧 Staging Layer (Silver)</span>
-  <span style="background:#3fb950;padding:4px 12px;border-radius:12px;font-size:.8rem">🟩 Warehouse Layer (Gold)</span>
-  <span style="background:#bc8cff;padding:4px 12px;border-radius:12px;font-size:.8rem">🟪 Mart Layer (Platinum)</span>
-</div>
-""", unsafe_allow_html=True)
-
-        st.divider()
-        st.markdown("#### 🔬 Column-Level Lineage — WAREHOUSE.FACT_SALES")
-        lineage_rows = [
-            ("ORDER_DATE_KEY",  "oltp.order_header.order_date",  "TO_NUMBER(TO_CHAR(date,'YYYYMMDD'))", "DIM_DATE join key"),
-            ("CUST_SK",         "oltp.customer.customer_id",      "DIM_CUSTOMER lookup",               "SCD2 surrogate key"),
-            ("PRD_SK",          "oltp.product.product_id",        "DIM_PRODUCT lookup",                "SCD2 surrogate key"),
-            ("STORE_SK",        "oltp.store.store_id",            "DIM_STORE lookup",                  "Type-1 surrogate key"),
-            ("PROMO_SK",        "oltp.promotion.code",            "DIM_PROMOTION lookup",              "NULL → -1 (no promo)"),
-            ("QTY_ORDERED",     "oltp.order_item.qty",            "CAST INTEGER",                      "Direct copy"),
-            ("UNIT_PRICE",      "oltp.order_item.unit_price",     "CAST NUMERIC",                      "At time of sale"),
-            ("UNIT_COST",       "oltp.product.unit_cost",         "DIM_PRODUCT.UNIT_COST",             "From current dim row"),
-            ("GROSS_REVENUE",   "Derived",                        "qty × unit_price",                  "Computed in transform"),
-            ("NET_REVENUE",     "oltp.order_item.line_total",     "CAST NUMERIC",                      "After discount"),
-            ("COGS",            "Derived",                        "qty × unit_cost",                   "Computed in transform"),
-            ("GROSS_PROFIT",    "Derived",                        "net_revenue - cogs",                "Computed in transform"),
-            ("DISCOUNT_AMT",    "oltp.order_item.line_discount",  "CAST NUMERIC",                      "From OLTP"),
-            ("GROSS_MARGIN_PCT","Derived",                        "(net_revenue-cogs)/net_revenue×100", "Computed in transform"),
-        ]
-        col_df = pd.DataFrame(lineage_rows,
-                              columns=["Target Column","Source","Transformation","Notes"])
-        st.dataframe(col_df, use_container_width=True, hide_index=True)
-
-        st.divider()
-        st.markdown("#### ⏱️ ETL Watermarks — Current State")
-        try:
-            wm = neon_query("""
-                SELECT table_name AS "Table",
-                       last_extracted AS "Last Extracted",
-                       rows_extracted AS "Rows",
-                       last_run_at AS "Last Run"
-                FROM oltp.etl_watermark ORDER BY table_name
-            """)
-            if not wm.empty:
-                st.dataframe(wm, use_container_width=True, hide_index=True)
-        except Exception as e:
-            st.warning(str(e))
-
-    # ══════════════════════════════════════════════════
-    # TAB 6 — AI Settings
-    # ══════════════════════════════════════════════════
-    with tab_ai:
-        st.markdown("### 🤖 AI Configuration")
-        st.info("Configure OpenAI API to enable: NL→SQL, AI insights, automated storytelling, and intelligent data exploration.", icon="🔑")
-
-        current_key = st.session_state.get("openai_key","")
-        new_key = st.text_input(
-            "OpenAI API Key",
-            value=current_key,
-            type="password",
-            placeholder="sk-...",
-            help="Your OpenAI API key — stored in session only, never written to disk",
-            key="ai_key_inp"
-        )
-        if new_key != current_key:
-            st.session_state["openai_key"] = new_key
-
-        model_choice = st.selectbox("Model", ["gpt-4o-mini","gpt-4o","gpt-4-turbo"], key="ai_model")
-
-        if st.button("🔌 Test OpenAI Connection", key="btn_test_ai"):
-            key = st.session_state.get("openai_key","")
-            if not key:
-                st.error("No API key set.")
-            else:
-                with st.spinner("Testing …"):
-                    try:
-                        from openai import OpenAI
-                        client = OpenAI(api_key=key)
-                        r = client.chat.completions.create(
-                            model=model_choice,
-                            messages=[{"role":"user","content":"Say: AI connected to SportZone!"}],
-                            max_tokens=20
-                        )
-                        st.success(f"✅ {r.choices[0].message.content.strip()}")
-                    except ImportError:
-                        st.error("Run: pip install openai")
-                    except Exception as e:
-                        st.error(str(e))
-
-        st.divider()
-        st.markdown("#### AI Capabilities (once key is set)")
-        st.markdown("""
-| Feature | Description |
-|---------|------------|
-| **NL → SQL** | Convert plain English to Snowflake SQL |
-| **Auto-insights** | AI-generated business insights from KPIs |
-| **Chart Storytelling** | Narrative explanations of every chart |
-| **Anomaly Narration** | AI explains unusual patterns |
-| **SQL Validation** | AI reviews generated SQL for correctness |
-| **Question Suggestions** | AI recommends follow-up questions |
-""")
+                st.error(f"Generation
