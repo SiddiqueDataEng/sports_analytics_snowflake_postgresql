@@ -8,6 +8,25 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+# ── Inject the sidebar TOTP code into EVERY snowflake connect() call ─────────
+import snowflake.connector as _sfc
+
+if not getattr(_sfc, "_totp_patched", False):
+    _orig_connect = _sfc.connect
+
+    def _connect_with_totp(*args, **kwargs):
+        sp = st.session_state.get("sf_params")
+        code = sp.get("passcode") if isinstance(sp, dict) else None
+        if code and not kwargs.get("passcode"):
+            kwargs["passcode"] = str(code).strip()
+        conn = _orig_connect(*args, **kwargs)
+        if code and isinstance(sp, dict):
+            sp.pop("passcode", None)      # a TOTP code works only once
+        return conn
+
+    _sfc.connect = _connect_with_totp
+    _sfc._totp_patched = True
+
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "deploy"))
@@ -124,25 +143,12 @@ def _sf_params() -> dict:
 def _sf_connect(params: dict | None = None):
     """
     Open ONE Snowflake connection and keep it in session_state.
-    Adds the TOTP code applied in the sidebar (sf_params['passcode']).
-    A TOTP code works only once, so it is removed after a successful login
-    and every later call reuses the open connection.
+    The TOTP code from the sidebar is added by the patched connect() above.
     """
     import snowflake.connector
 
     p = {k: v for k, v in (params or _sf_params()).items() if v}
-
-    session_params = st.session_state.get("sf_params") or {}
-    code = session_params.get("passcode") or p.get("passcode")
-    if code:
-        p["passcode"] = str(code).strip()
-
     conn = snowflake.connector.connect(**p)
-
-    # code is now used up: drop it so a reconnect doesn't reuse a stale code
-    if isinstance(st.session_state.get("sf_params"), dict):
-        st.session_state["sf_params"].pop("passcode", None)
-
     st.session_state["sf_conn"] = conn
     return conn
 
