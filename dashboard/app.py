@@ -52,35 +52,36 @@ with st.sidebar:
     st.divider()
 
     # ── Snowflake MFA (TOTP) code ─────────────────────────────
-    sf_params = st.session_state.get("sf_params") or {}
-    has_code = bool(sf_params.get("passcode"))
-    with st.expander("❄️ Snowflake MFA code", expanded=not has_code):
-        totp = st.text_input(
-            "Authenticator code (6 digits)",
-            max_chars=6,
-            key="totp_input",
-            help="Only needed if your Snowflake user requires MFA.",
-        )
+    _c = st.session_state.get("sf_conn")
+    connected = _c is not None and not _c.is_closed()
+    has_code  = bool(st.session_state.get("sf_totp"))
+
+    with st.expander("❄️ Snowflake MFA code", expanded=not connected):
+        if connected:
+            st.success("Connected to Snowflake.")
+        elif has_code:
+            st.success("Code applied. Now click Test Snowflake.")
+        totp = st.text_input("Authenticator code (6 digits)", max_chars=6, key="totp_input")
         c1, c2 = st.columns(2)
         if c1.button("Apply", use_container_width=True):
             if totp.strip().isdigit() and len(totp.strip()) == 6:
-                new_params = dict(sf_params)
-                new_params["passcode"] = totp.strip()
-                st.session_state["sf_params"] = new_params
-                st.session_state.pop("sf_conn", None)   # force reconnect
+                st.session_state["sf_totp"] = totp.strip()
+                old = st.session_state.pop("sf_conn", None)   # force a fresh login
+                try:
+                    if old is not None:
+                        old.close()
+                except Exception:
+                    pass
                 st.rerun()
             else:
                 st.error("Enter the 6-digit code.")
         if c2.button("Clear", use_container_width=True):
-            new_params = dict(sf_params)
-            new_params.pop("passcode", None)
-            st.session_state["sf_params"] = new_params
-            st.session_state.pop("sf_conn", None)
+            st.session_state.pop("sf_totp", None)
             st.rerun()
     st.divider()
 
     neon_ok = "🟢" if st.session_state.get("neon_url") else "🔴"
-    sf_ok   = "🟢" if st.session_state.get("sf_params") else "🔴"
+    sf_ok   = "🟢" if connected else "🔴"
     ai_ok   = "🟢" if st.session_state.get("openai_key") else "🔴"
     st.markdown(f"{neon_ok} **Neon OLTP**  \n{sf_ok} **Snowflake DWH**  \n{ai_ok} **AI (OpenAI)**")
     st.divider()
