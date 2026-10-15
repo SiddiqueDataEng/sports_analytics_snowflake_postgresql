@@ -77,7 +77,7 @@ def mask_url(url: str) -> str:
     return re.sub(r'(:)[^@]+(@)', r'\1***\2', url) if url else ""
 
 def mask_sf(params: dict) -> dict:
-    return {k: "***" if k in ("password", "private_key") else v
+    return {k: "***" if k in ("password", "private_key", "passcode") else v
             for k, v in params.items()}
 
 # ── Neon connection helpers ───────────────────────────────────────────────────
@@ -117,47 +117,81 @@ def test_neon(url: str) -> tuple[bool, str]:
     except Exception as e:
         return False, f"❌ {e}"
 
-# ── Snowflake helpers ─────────────────────────────────────────────────────────
+# ── Snowflake helpers (MFA-aware, single shared connection) ───────────────────
 def _sf_params() -> dict:
     return st.session_state.get("sf_params") or default_snowflake_params()
 
-def sf_conn():
+def _sf_connect(params: dict | None = None):
+    """
+    Open ONE Snowflake connection and keep it in session_state.
+    Adds the TOTP code applied in the sidebar (sf_params['passcode']).
+    A TOTP code works only once, so it is removed after a successful login
+    and every later call reuses the open connection.
+    """
     import snowflake.connector
-    conn = snowflake.connector.connect(**_sf_params())
-    conn.cursor().execute("USE DATABASE SPORTZONE_DEV")
-    conn.cursor().execute("USE WAREHOUSE COMPUTE_WH")
+
+    p = {k: v for k, v in (params or _sf_params()).items() if v}
+
+    session_params = st.session_state.get("sf_params") or {}
+    code = session_params.get("passcode") or p.get("passcode")
+    if code:
+        p["passcode"] = str(code).strip()
+
+    conn = snowflake.connector.connect(**p)
+
+    # code is now used up: drop it so a reconnect doesn't reuse a stale code
+    if isinstance(st.session_state.get("sf_params"), dict):
+        st.session_state["sf_params"].pop("passcode", None)
+
+    st.session_state["sf_conn"] = conn
+    return conn
+
+def get_sf_conn():
+    """Return the open connection, or log in again if there isn't one."""
+    conn = st.session_state.get("sf_conn")
+    if conn is not None and not conn.is_closed():
+        return conn
+    return _sf_connect()
+
+def _use_context(cur):
+    cur.execute("USE DATABASE SPORTZONE_DEV")
+    cur.execute("USE WAREHOUSE COMPUTE_WH")
+
+def sf_conn():
+    """Shared connection. Do not call .close() on it."""
+    conn = get_sf_conn()
+    _use_context(conn.cursor())
     return conn
 
 @st.cache_data(ttl=60, show_spinner=False)
 def sf_query(sql: str) -> pd.DataFrame:
     import snowflake.connector
-    conn = snowflake.connector.connect(**_sf_params())
+    conn = get_sf_conn()
     cur  = conn.cursor(snowflake.connector.DictCursor)
-    cur.execute("USE DATABASE SPORTZONE_DEV")
-    cur.execute("USE WAREHOUSE COMPUTE_WH")
-    cur.execute(sql)
-    rows = cur.fetchall()
-    conn.close()
+    try:
+        _use_context(cur)
+        cur.execute(sql)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 def sf_execute(sql: str):
-    import snowflake.connector
-    conn = snowflake.connector.connect(**_sf_params())
+    conn = get_sf_conn()
     cur  = conn.cursor()
-    cur.execute("USE DATABASE SPORTZONE_DEV")
-    cur.execute("USE WAREHOUSE COMPUTE_WH")
-    cur.execute(sql)
-    conn.close()
+    try:
+        _use_context(cur)
+        cur.execute(sql)
+    finally:
+        cur.close()
 
 def test_snowflake(params: dict) -> tuple[bool, str]:
     try:
-        import snowflake.connector
-        conn = snowflake.connector.connect(
-            **{k: v for k, v in params.items() if v})
+        conn = _sf_connect(params)      # keeps the connection for later use
         cur  = conn.cursor()
         cur.execute("SELECT CURRENT_DATABASE(), CURRENT_WAREHOUSE(), CURRENT_ROLE()")
         db, wh, role = cur.fetchone()
-        conn.close()
+        cur.close()
         return True, f"✅ db={db}, wh={wh}, role={role}"
     except Exception as e:
         return False, f"❌ {e}"
