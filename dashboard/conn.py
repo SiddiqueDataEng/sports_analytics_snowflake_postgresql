@@ -15,14 +15,15 @@ if not getattr(_sfc, "_totp_patched", False):
     _orig_connect = _sfc.connect
 
     def _connect_with_totp(*args, **kwargs):
-        sp = st.session_state.get("sf_params")
-        code = sp.get("passcode") if isinstance(sp, dict) else None
+        code = st.session_state.get("sf_totp")
         if code and not kwargs.get("passcode"):
             kwargs["passcode"] = str(code).strip()
-        conn = _orig_connect(*args, **kwargs)
-        if code and isinstance(sp, dict):
-            sp.pop("passcode", None)      # a TOTP code works only once
-        return conn
+        try:
+            return _orig_connect(*args, **kwargs)
+        finally:
+            if code:
+                # a TOTP code works only once, so never reuse it
+                st.session_state.pop("sf_totp", None)
 
     _sfc.connect = _connect_with_totp
     _sfc._totp_patched = True
@@ -143,7 +144,8 @@ def _sf_params() -> dict:
 def _sf_connect(params: dict | None = None):
     """
     Open ONE Snowflake connection and keep it in session_state.
-    The TOTP code from the sidebar is added by the patched connect() above.
+    The TOTP code (st.session_state['sf_totp']) is added by the patched
+    connect() at the top of this file.
     """
     import snowflake.connector
 
@@ -152,12 +154,14 @@ def _sf_connect(params: dict | None = None):
     st.session_state["sf_conn"] = conn
     return conn
 
+def sf_live_conn():
+    """Return the open shared connection, or None. Never logs in by itself."""
+    c = st.session_state.get("sf_conn")
+    return c if (c is not None and not c.is_closed()) else None
+
 def get_sf_conn():
-    """Return the open connection, or log in again if there isn't one."""
-    conn = st.session_state.get("sf_conn")
-    if conn is not None and not conn.is_closed():
-        return conn
-    return _sf_connect()
+    """Return the open connection, or log in if there isn't one."""
+    return sf_live_conn() or _sf_connect()
 
 def _use_context(cur):
     cur.execute("USE DATABASE SPORTZONE_DEV")
@@ -193,7 +197,7 @@ def sf_execute(sql: str):
 
 def test_snowflake(params: dict) -> tuple[bool, str]:
     try:
-        conn = _sf_connect(params)      # keeps the connection for later use
+        conn = sf_live_conn() or _sf_connect(params)
         cur  = conn.cursor()
         cur.execute("SELECT CURRENT_DATABASE(), CURRENT_WAREHOUSE(), CURRENT_ROLE()")
         db, wh, role = cur.fetchone()
