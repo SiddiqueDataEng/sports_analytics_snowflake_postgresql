@@ -1,0 +1,29 @@
+name: 'sportzone'
+version: '1.0.0'
+config-version: 2
+
+profile: 'sportzone'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  sportzone:
+    staging:
+      +schema: STAGING
+      +materialized: view
+    warehouse:
+      +schema: WAREHOUSE
+      +materialized: table
+    mart:
+      +schema: MART
+      +materialized: view

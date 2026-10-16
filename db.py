@@ -49,7 +49,7 @@ def get_neon_url(direct: bool = False) -> str:
 
 def get_neon_conn(direct: bool = False, **kwargs):
     """
-    Open and return a psycopg2 connection.
+    Open and return a psycopg connection.
     direct=True uses the unpooled URL — recommended for ETL/bulk operations.
     direct=False uses the pooler URL — for short queries.
     """

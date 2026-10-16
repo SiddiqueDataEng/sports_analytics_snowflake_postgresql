@@ -213,6 +213,8 @@ python etl/pipeline.py --dry-run
 
 ### 7. Launch dashboard
 
+The sidebar uses the dashboard's Management & ETL and Analytics Dashboard controls; Streamlit's duplicate file-based page links are hidden.
+
 ```bash
 python -m streamlit run dashboard/app.py
 # Opens at http://localhost:8501
@@ -253,10 +255,16 @@ python run_all.py --customers 100 --orders 500 --events 1000
 
 ```bash
 python oltp/generator.py --customers 500 --orders 2000 --events 3000 --start-date 2024-01-01
+python oltp/generator.py --orders 2000 --start-date 2023-01-01 --end-date 2023-12-31 --csv-output output/historical_orders.csv
+python oltp/generator.py --destination both --start-date 2023-01-01 --end-date 2023-12-31
 python oltp/generator.py --stats                      # show row counts
 python oltp/generator.py --continuous --batch 50 --interval 30  # live streaming
 python oltp/generator.py --reset --customers 200 --orders 1000  # reset + regenerate
 ```
+
+Without `--destination`, the generator prompts for PostgreSQL, CSV files, or both. If either date flag is omitted, it prompts for that date; both dates are inclusive. CSV mode writes a CSV per generated OLTP table to `output/oltp_csv` by default (override with `--csv-output-dir`). CSV exports contain unique primary keys and a few intentional data-quality examples (invalid email, missing phone, zero item quantity, and invalid event type) for ETL/testing. In `both` mode these issues exist only in the CSV files; PostgreSQL receives the clean generated records. CSV files are snapshots and are overwritten on later runs. Continuous mode supports PostgreSQL only.
+
+The legacy `--csv-output` option still writes only generated order headers to a separate CSV file alongside PostgreSQL inserts. It is not the all-table export; use CSV or both mode for the OLTP table files.
 
 ---
 
@@ -475,6 +483,7 @@ NEON_BRANCH=production
 ```bash
 python oltp/generator.py --seed-only                          # reference data only
 python oltp/generator.py --customers 500 --orders 2000        # full generation
+python oltp/generator.py --orders 2000 --start-date 2023-01-01 --end-date 2023-12-31 --csv-output output/historical_orders.csv
 python oltp/generator.py --continuous --batch 50 --interval 15 # streaming mode
 python oltp/generator.py --reset --customers 200 --orders 1000 # reset & rebuild
 python oltp/generator.py --stats                               # show counts

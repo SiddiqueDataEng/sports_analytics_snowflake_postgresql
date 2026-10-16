@@ -18,9 +18,9 @@ st.set_page_config(
 
 from conn import default_neon_url, default_snowflake_params
 
-if "neon_url"     not in st.session_state: st.session_state["neon_url"]     = default_neon_url()
-if "sf_params"    not in st.session_state: st.session_state["sf_params"]    = default_snowflake_params()
-if "openai_key"   not in st.session_state: st.session_state["openai_key"]   = ""
+if "neon_url"    not in st.session_state: st.session_state["neon_url"]    = default_neon_url()
+if "sf_params"   not in st.session_state: st.session_state["sf_params"]   = default_snowflake_params()
+if "openai_key"  not in st.session_state: st.session_state["openai_key"]  = ""
 if "pipeline_log" not in st.session_state: st.session_state["pipeline_log"] = []
 
 st.markdown("""
@@ -45,43 +45,13 @@ with st.sidebar:
     st.markdown("## 🏆 SportZone")
     st.markdown("**Data Engineering Platform**")
     st.divider()
-    page = st.radio("Navigation", [
+    page = st.radio("", [
         "🔧 Management & ETL",
         "📊 Analytics Dashboard",
     ], label_visibility="collapsed")
     st.divider()
-
-    # ── Snowflake MFA (TOTP) code ─────────────────────────────
-    _c = st.session_state.get("sf_conn")
-    connected = _c is not None and not _c.is_closed()
-    has_code  = bool(st.session_state.get("sf_totp"))
-
-    with st.expander("❄️ Snowflake MFA code", expanded=not connected):
-        if connected:
-            st.success("Connected to Snowflake.")
-        elif has_code:
-            st.success("Code applied. Now click Test Snowflake.")
-        totp = st.text_input("Authenticator code (6 digits)", max_chars=6, key="totp_input")
-        c1, c2 = st.columns(2)
-        if c1.button("Apply", use_container_width=True):
-            if totp.strip().isdigit() and len(totp.strip()) == 6:
-                st.session_state["sf_totp"] = totp.strip()
-                old = st.session_state.pop("sf_conn", None)   # force a fresh login
-                try:
-                    if old is not None:
-                        old.close()
-                except Exception:
-                    pass
-                st.rerun()
-            else:
-                st.error("Enter the 6-digit code.")
-        if c2.button("Clear", use_container_width=True):
-            st.session_state.pop("sf_totp", None)
-            st.rerun()
-    st.divider()
-
     neon_ok = "🟢" if st.session_state.get("neon_url") else "🔴"
-    sf_ok   = "🟢" if connected else "🔴"
+    sf_ok   = "🟢" if st.session_state.get("sf_params") else "🔴"
     ai_ok   = "🟢" if st.session_state.get("openai_key") else "🔴"
     st.markdown(f"{neon_ok} **Neon OLTP**  \n{sf_ok} **Snowflake DWH**  \n{ai_ok} **AI (OpenAI)**")
     st.divider()

@@ -1,0 +1,31 @@
+sportzone:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      # Use one of: password, private_key_path, or authenticator: externalbrowser
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH') }}"
+      private_key_passphrase: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', '') }}"
+      role: SPORTZONE_DATA_ENG
+      database: SPORTZONE_DEV
+      warehouse: DEV_LOAD_WH
+      schema: RAW            # default; models override via +schema config
+      threads: 4
+      client_session_keep_alive: false
+      query_tag: dbt_sportzone
+
+    prod:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH') }}"
+      private_key_passphrase: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', '') }}"
+      role: SPORTZONE_DATA_ENG
+      database: SPORTZONE_PROD
+      warehouse: PROD_LOAD_WH
+      schema: RAW
+      threads: 8
+      client_session_keep_alive: false
+      query_tag: dbt_sportzone_prod

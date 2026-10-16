@@ -8,26 +8,6 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-# ── Inject the sidebar TOTP code into EVERY snowflake connect() call ─────────
-import snowflake.connector as _sfc
-
-if not getattr(_sfc, "_totp_patched", False):
-    _orig_connect = _sfc.connect
-
-    def _connect_with_totp(*args, **kwargs):
-        code = st.session_state.get("sf_totp")
-        if code and not kwargs.get("passcode"):
-            kwargs["passcode"] = str(code).strip()
-        try:
-            return _orig_connect(*args, **kwargs)
-        finally:
-            if code:
-                # a TOTP code works only once, so never reuse it
-                st.session_state.pop("sf_totp", None)
-
-    _sfc.connect = _connect_with_totp
-    _sfc._totp_patched = True
-
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "deploy"))
@@ -97,7 +77,7 @@ def mask_url(url: str) -> str:
     return re.sub(r'(:)[^@]+(@)', r'\1***\2', url) if url else ""
 
 def mask_sf(params: dict) -> dict:
-    return {k: "***" if k in ("password", "private_key", "passcode") else v
+    return {k: "***" if k in ("password", "private_key") else v
             for k, v in params.items()}
 
 # ── Neon connection helpers ───────────────────────────────────────────────────
@@ -137,71 +117,47 @@ def test_neon(url: str) -> tuple[bool, str]:
     except Exception as e:
         return False, f"❌ {e}"
 
-# ── Snowflake helpers (MFA-aware, single shared connection) ───────────────────
+# ── Snowflake helpers ─────────────────────────────────────────────────────────
 def _sf_params() -> dict:
     return st.session_state.get("sf_params") or default_snowflake_params()
 
-def _sf_connect(params: dict | None = None):
-    """
-    Open ONE Snowflake connection and keep it in session_state.
-    The TOTP code (st.session_state['sf_totp']) is added by the patched
-    connect() at the top of this file.
-    """
-    import snowflake.connector
-
-    p = {k: v for k, v in (params or _sf_params()).items() if v}
-    conn = snowflake.connector.connect(**p)
-    st.session_state["sf_conn"] = conn
-    return conn
-
-def sf_live_conn():
-    """Return the open shared connection, or None. Never logs in by itself."""
-    c = st.session_state.get("sf_conn")
-    return c if (c is not None and not c.is_closed()) else None
-
-def get_sf_conn():
-    """Return the open connection, or log in if there isn't one."""
-    return sf_live_conn() or _sf_connect()
-
-def _use_context(cur):
-    cur.execute("USE DATABASE SPORTZONE_DEV")
-    cur.execute("USE WAREHOUSE COMPUTE_WH")
-
 def sf_conn():
-    """Shared connection. Do not call .close() on it."""
-    conn = get_sf_conn()
-    _use_context(conn.cursor())
+    import snowflake.connector
+    conn = snowflake.connector.connect(**_sf_params())
+    conn.cursor().execute("USE DATABASE SPORTZONE_DEV")
+    conn.cursor().execute("USE WAREHOUSE COMPUTE_WH")
     return conn
 
 @st.cache_data(ttl=60, show_spinner=False)
 def sf_query(sql: str) -> pd.DataFrame:
     import snowflake.connector
-    conn = get_sf_conn()
+    conn = snowflake.connector.connect(**_sf_params())
     cur  = conn.cursor(snowflake.connector.DictCursor)
-    try:
-        _use_context(cur)
-        cur.execute(sql)
-        rows = cur.fetchall()
-    finally:
-        cur.close()
+    cur.execute("USE DATABASE SPORTZONE_DEV")
+    cur.execute("USE WAREHOUSE COMPUTE_WH")
+    cur.execute(sql)
+    rows = cur.fetchall()
+    conn.close()
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 def sf_execute(sql: str):
-    conn = get_sf_conn()
+    import snowflake.connector
+    conn = snowflake.connector.connect(**_sf_params())
     cur  = conn.cursor()
-    try:
-        _use_context(cur)
-        cur.execute(sql)
-    finally:
-        cur.close()
+    cur.execute("USE DATABASE SPORTZONE_DEV")
+    cur.execute("USE WAREHOUSE COMPUTE_WH")
+    cur.execute(sql)
+    conn.close()
 
 def test_snowflake(params: dict) -> tuple[bool, str]:
     try:
-        conn = sf_live_conn() or _sf_connect(params)
+        import snowflake.connector
+        conn = snowflake.connector.connect(
+            **{k: v for k, v in params.items() if v})
         cur  = conn.cursor()
         cur.execute("SELECT CURRENT_DATABASE(), CURRENT_WAREHOUSE(), CURRENT_ROLE()")
         db, wh, role = cur.fetchone()
-        cur.close()
+        conn.close()
         return True, f"✅ db={db}, wh={wh}, role={role}"
     except Exception as e:
         return False, f"❌ {e}"

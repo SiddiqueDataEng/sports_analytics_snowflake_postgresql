@@ -1,0 +1,59 @@
+version: 2
+
+sources:
+  - name: raw
+    database: SPORTZONE_DEV
+    schema: RAW
+    description: "Bronze layer — raw landing tables loaded from CSV stages via COPY INTO."
+    tables:
+      - name: RAW_CUSTOMERS
+        description: "Raw customer records from CRM CSV export. All columns are VARCHAR."
+        columns:
+          - name: CUST_ID
+            description: "Source customer identifier."
+            tests:
+              - not_null
+          - name: _LOAD_TS
+            description: "Audit timestamp set by COPY INTO."
+
+      - name: RAW_PRODUCTS
+        description: "Raw product catalogue from CSV."
+        columns:
+          - name: PRD_ID
+            tests:
+              - not_null
+
+      - name: RAW_STORES
+        description: "Raw store master from CSV."
+        columns:
+          - name: STORE_ID
+            tests:
+              - not_null
+
+      - name: RAW_ORDERS
+        description: "Raw order headers from CSV."
+        columns:
+          - name: ORDER_ID
+            tests:
+              - not_null
+
+      - name: RAW_ORDER_ITEMS
+        description: "Raw order line items from CSV."
+        columns:
+          - name: ORDER_ITEM_ID
+            tests:
+              - not_null
+
+      - name: RAW_INVENTORY
+        description: "Raw daily inventory snapshots from CSV."
+        columns:
+          - name: INVENTORY_ID
+            tests:
+              - not_null
+
+      - name: RAW_PROMOTIONS
+        description: "Raw promotion definitions from CSV."
+        columns:
+          - name: PROMO_ID
+            tests:
+              - not_null
