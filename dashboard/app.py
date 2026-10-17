@@ -46,7 +46,9 @@ with st.sidebar:
     st.markdown("**Data Engineering Platform**")
     st.divider()
     page = st.radio("Navigation", [
+        "🏗️ Architecture",
         "🔧 Management & ETL",
+        "⚙️ dbt Transforms",
         "📊 Analytics Dashboard",
     ], label_visibility="collapsed")
     st.divider()
@@ -85,11 +87,17 @@ with st.sidebar:
     ai_ok   = "🟢" if st.session_state.get("openai_key") else "🔴"
     st.markdown(f"{neon_ok} **Neon OLTP**  \n{sf_ok} **Snowflake DWH**  \n{ai_ok} **AI (OpenAI)**")
     st.divider()
-    st.caption("v2.0 · Neon × Snowflake × OpenAI")
+    st.caption("v3.0 · Neon × Snowflake × dbt × OpenAI")
 
-if page == "🔧 Management & ETL":
+if page == "🏗️ Architecture":
+    from pages import architecture
+    architecture.render()
+elif page == "🔧 Management & ETL":
     from pages import management
     management.render()
+elif page == "⚙️ dbt Transforms":
+    from pages import dbt_page
+    dbt_page.render()
 else:
     from pages import analytics
     analytics.render()

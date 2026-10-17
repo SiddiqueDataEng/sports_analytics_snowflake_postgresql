@@ -56,30 +56,8 @@ def default_neon_url() -> str:
 
 # ── Snowflake params ──────────────────────────────────────────────────────────
 def default_snowflake_params() -> dict:
-    # 1. Streamlit Cloud secrets
-    try:
-        sf = dict(st.secrets.get("snowflake", {}))
-        if sf.get("account"):
-            params = {
-                "account":   sf["account"],
-                "user":      sf["user"],
-                "role":      sf.get("role", "ACCOUNTADMIN"),
-                "warehouse": sf.get("warehouse", "COMPUTE_WH"),
-                "database":  sf.get("database", "SPORTZONE_DEV"),
-                "schema":    sf.get("schema", "WAREHOUSE"),
-                "authenticator": "snowflake",
-            }
-            if sf.get("password"):
-                params["password"] = sf["password"]
-            elif sf.get("private_key"):
-                from cryptography.hazmat.primitives.serialization import load_pem_private_key
-                from cryptography.hazmat.backends import default_backend
-                pem = sf["private_key"].encode()
-                params["private_key"] = load_pem_private_key(pem, None, default_backend())
-            return params
-    except Exception:
-        pass
-    # 2. Local deploy/config.py
+    # Always use deploy/config.py — it reads the .env keypair correctly
+    # (Streamlit secrets path is skipped to avoid password+MFA flow)
     try:
         from config import load_config
         return load_config()
@@ -139,17 +117,18 @@ def test_neon(url: str) -> tuple[bool, str]:
 
 # ── Snowflake helpers (MFA-aware, single shared connection) ───────────────────
 def _sf_params() -> dict:
-    return st.session_state.get("sf_params") or default_snowflake_params()
+    # Always load fresh from config — never use stale session_state params
+    return default_snowflake_params()
 
 def _sf_connect(params: dict | None = None):
     """
     Open ONE Snowflake connection and keep it in session_state.
     The TOTP code (st.session_state['sf_totp']) is added by the patched
     connect() at the top of this file.
+    Always uses fresh params from config.py — ignores stale session params.
     """
     import snowflake.connector
-
-    p = {k: v for k, v in (params or _sf_params()).items() if v}
+    p = {k: v for k, v in (params or default_snowflake_params()).items() if v}
     conn = snowflake.connector.connect(**p)
     st.session_state["sf_conn"] = conn
     return conn
@@ -197,7 +176,9 @@ def sf_execute(sql: str):
 
 def test_snowflake(params: dict) -> tuple[bool, str]:
     try:
-        conn = sf_live_conn() or _sf_connect(params)
+        # Always use fresh params from config — ignore stale session params
+        fresh = default_snowflake_params()
+        conn = sf_live_conn() or _sf_connect(fresh)
         cur  = conn.cursor()
         cur.execute("SELECT CURRENT_DATABASE(), CURRENT_WAREHOUSE(), CURRENT_ROLE()")
         db, wh, role = cur.fetchone()
